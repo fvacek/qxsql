@@ -1,5 +1,8 @@
+use ::config::File;
+use anyhow::anyhow;
 use clap::Parser;
 use futures::select;
+use log::{debug, error, info, warn};
 use shvnode::PUBLIC_DIR_LS_METHODS;
 use shvproto::List;
 use shvrpc::client::{self, LoginParams};
@@ -10,38 +13,61 @@ use shvrpc::rpcmessage::{RpcError, RpcErrorCode};
 use shvrpc::streamrw::{StreamFrameReader, StreamFrameWriter};
 use shvrpc::util::login_from_url;
 use shvrpc::{RpcMessage, RpcMessageMetaTags};
-use log::{debug, error, info, warn};
+use std::backtrace::Backtrace;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::time::sleep;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use std::backtrace::Backtrace;
 use futures_util::FutureExt;
-use anyhow::anyhow;
 
 mod shvnode;
+mod config;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    /// Path to config file
+    #[arg(short, long)]
+    config: Option<String>,
+
     /// SHV broker URL
     #[arg(short, long)]
-    url: String,
+    url: Option<String>,
 
+    /// Database connection string
+    #[arg(short, long)]
+    database: Option<String>,
+
+    /// SHV path to mount the service on
+    #[arg(short, long)]
+    path: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or("info")
-        ).init();
+    env_logger::init();
     let args = Args::parse();
 
-    // info!("Connecting to database: {}", args.database);
+    let mut settings = ::config::Config::builder();
+    if let Some(config_path) = args.config {
+        settings = settings.add_source(File::with_name(&config_path));
+    }
+    let settings = settings.set_default("client.url", "tcp://localhost:3755?user=test&password=password")?;
+
+    let settings = settings.build()?;
+
+    let config: config::Config = settings.try_deserialize()?;
+
+    let url = match args.url {
+        Some(url) => url,
+        None => config.client.url,
+    };
+
+    info!("Connecting to database: {}", args.database.unwrap_or(config.database));
     // let db_pool = AnyPool::connect(&args.database).await?;
     info!("Database connected.");
 
-    let url = url::Url::parse(&args.url)?;
+    let url = url::Url::parse(&url)?;
     broker_peer_loop_from_url(url).await?;
 
     Ok(())
