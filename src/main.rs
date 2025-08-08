@@ -41,6 +41,10 @@ struct Args {
     /// SHV path to mount the service on
     #[arg(short, long)]
     path: Option<String>,
+
+    /// Print effective config
+    #[arg(long)]
+    print_config: bool,
 }
 
 #[tokio::main]
@@ -53,21 +57,30 @@ async fn main() -> anyhow::Result<()> {
         settings = settings.add_source(File::with_name(&config_path));
     }
     let settings = settings.set_default("client.url", "tcp://localhost:3755?user=test&password=password")?;
+    let settings = settings.set_default("database", "/tmp/qxsqld.db")?;
 
     let settings = settings.build()?;
 
-    let config: config::Config = settings.try_deserialize()?;
+    let mut config: config::Config = settings.try_deserialize()?;
 
-    let url = match args.url {
-        Some(url) => url,
-        None => config.client.url,
-    };
+    if let Some(url) = args.url {
+        config.client.url = url;
+    }
+    if let Some(database) = args.database {
+        config.database = database;
+    }
 
-    info!("Connecting to database: {}", args.database.unwrap_or(config.database));
+    if args.print_config {
+        let yaml = serde_yaml::to_string(&config)?;
+        println!("{}", yaml);
+        return Ok(());
+    }
+
+    info!("Connecting to database: {}", config.database);
     // let db_pool = AnyPool::connect(&args.database).await?;
     info!("Database connected.");
 
-    let url = url::Url::parse(&url)?;
+    let url = url::Url::parse(&config.client.url)?;
     broker_peer_loop_from_url(url).await?;
 
     Ok(())
