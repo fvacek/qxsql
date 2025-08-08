@@ -52,14 +52,14 @@ pub fn dir<'a>(mut methods: impl Iterator<Item=&'a MetaMethod>, param: DirParam)
 
 pub enum LsParam {
     List,
-    Exists(String),
+    Exists,
 }
 impl From<Option<&RpcValue>> for LsParam {
     fn from(value: Option<&RpcValue>) -> Self {
         match value {
             Some(rpcval) => {
                 if rpcval.is_string() {
-                    LsParam::Exists(rpcval.as_str().into())
+                    LsParam::Exists
                 } else {
                     LsParam::List
                 }

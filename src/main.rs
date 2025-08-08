@@ -28,117 +28,16 @@ struct Args {
     #[arg(short, long)]
     url: String,
 
-    /// Database connection string
-    #[arg(short, long)]
-    database: String,
-
-    /// SHV path to mount the service on
-    #[arg(short, long, default_value = "db")]
-    path: String,
 }
-
-// async fn rpc_task(
-//     mut rpc_connection: shvrpc::transport::TcpRpcConnection,
-//     db_pool: AnyPool,
-//     mount_path: &str,
-// ) -> anyhow::Result<()> {
-//     rpc_connection.login("admin", "admin").await?;
-//     info!("Logged in to shv broker.");
-
-//     let (mut rpc_writer, mut rpc_reader) = rpc_connection.split();
-//     let pending_calls = Arc::new(Mutex::new(BTreeMap::new()));
-
-//     let mount_point = format!("{}/{}", mount_path, "master");
-//     let mut frame = RpcFrame::new_request(mount_point.clone(), "mount", None);
-//     frame.set_access_level("su");
-//     rpc_writer.send_frame(frame).await?;
-
-//     let db_pool = Arc::new(db_pool);
-
-//     loop {
-//         tokio::select! {
-//             Some(frame) = rpc_reader.next() => {
-//                 if let Some(req) = frame.as_request() {
-//                     let shv_path = req.shv_path().unwrap_or_default();
-//                     let method = req.method().unwrap_or_default();
-//                     info!("SHV call received: {}->{}", shv_path, method);
-
-//                     let response = RpcMessage::new_response(req.request_id().unwrap_or_default());
-//                     let db_pool = db_pool.clone();
-//                     let pending_calls = pending_calls.clone();
-
-//                     let fut: Pin<Box<dyn Future<Output = RpcMessage> + Send>> = match method {
-//                         "exec" => {
-//                             Box::pin(async move {
-//                                 let params = req.params().unwrap_or_default();
-//                                 let sql = params.as_str();
-//                                 match db_pool.execute(sql).await {
-//                                     Ok(result) => response.with_result(result.rows_affected()),
-//                                     Err(e) => response.with_error(e.to_string()),
-//                                 }
-//                             })
-//                         }
-//                         "select" => {
-//                             Box::pin(async move {
-//                                 let params = req.params().unwrap_or_default();
-//                                 let sql = params.as_str();
-//                                 match db_pool.fetch_all(sql).await {
-//                                     Ok(rows) => {
-//                                         let mut result_rows = vec![];
-//                                         for row in rows {
-//                                             let mut result_row = vec![];
-//                                             for (i, col) in row.columns().iter().enumerate() {
-//                                                 let value: RpcValue = match col.type_info().name() {
-//                                                     "TEXT" | "VARCHAR" => row.get::<String, _>(i).into(),
-//                                                     "INTEGER" | "INT" => row.get::<i64, _>(i).into(),
-//                                                     "REAL" | "FLOAT" | "DOUBLE" => row.get::<f64, _>(i).into(),
-//                                                     "BOOLEAN" | "BOOL" => row.get::<bool, _>(i).into(),
-//                                                     "NULL" => RpcValue::from(()),
-//                                                     _ => RpcValue::from(row.get::<String, _>(i)),
-//                                                 };
-//                                                 result_row.push(value);
-//                                             }
-//                                             result_rows.push(RpcValue::from(result_row));
-//                                         }
-//                                         response.with_result(RpcValue::from(result_rows))
-//                                     }
-//                                     Err(e) => response.with_error(e.to_string()),
-//                                 }
-//                             })
-//                         }
-//                         _ => {
-//                             Box::pin(async move {
-//                                 response.with_error(format!("Unknown method: {}", method))
-//                             })
-//                         }
-//                     };
-//                     pending_calls.lock().unwrap().insert(req.request_id().unwrap(), fut);
-//                 } else if let Some(resp) = frame.as_response() {
-//                     info!("SHV response received: {:?}", resp);
-//                 } else if let Some(signal) = frame.as_signal() {
-//                     info!("SHV signal received: {:?}", signal);
-//                 }
-//             },
-//         }
-//         let mut finished_calls = vec![];
-//         for (req_id, fut) in pending_calls.lock().unwrap().iter_mut() {
-//             if let Some(response) = fut.now_or_never() {
-//                 rpc_writer.send_message(response).await?;
-//                 finished_calls.push(*req_id);
-//             }
-//         }
-//         for req_id in finished_calls {
-//             pending_calls.lock().unwrap().remove(&req_id);
-//         }
-//     }
-// }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or("info")
+        ).init();
     let args = Args::parse();
 
-    info!("Connecting to database: {}", args.database);
+    // info!("Connecting to database: {}", args.database);
     // let db_pool = AnyPool::connect(&args.database).await?;
     info!("Database connected.");
 
@@ -213,24 +112,28 @@ async fn broker_peer_loop(url: url::Url, mut frame_reader: impl FrameReader + Se
                     return Err(anyhow!("Read RQ frame error: {e}"));
                 }
             },
-            resp_frame = fut_resp_frame => match resp_frame {
-                Some(frame) => {
-                    process_broker_client_peer_frame(frame, frame_sender.clone()).await?;
-                    drop(fut_resp_frame);
-                    fut_resp_frame = Box::pin(frame_receiver.recv()).fuse();
-                }
-                None => {
-                    return Err(anyhow!("Read RESP frame error"));
+            resp_frame = fut_resp_frame => {
+                    match resp_frame {
+                    Some(frame) => {
+                        // info!("Received response frame {:?}", frame);
+                        frame_writer.send_frame(frame).await.map_err(rpc_to_anyhow)?;
+                        drop(fut_resp_frame);
+                        fut_resp_frame = Box::pin(frame_receiver.recv()).fuse();
+                    }
+                    None => {
+                        return Err(anyhow!("Read RESP frame error"));
+                    }
                 }
             }
         }
-    };
-    Ok(())
+    }
 }
 
 async fn process_broker_client_peer_frame(frame: RpcFrame, sender: Sender<RpcFrame>) -> anyhow::Result<()> {
     if frame.is_request() {
         process_request(frame, sender).await?;
+    } else if frame.is_response() {
+        warn!("RPC response should not be received from client connection to parent broker: {}", &frame);
     } else {
         warn!("RPC signal should not be received from client connection to parent broker: {}", &frame);
     }
