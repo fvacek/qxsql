@@ -16,6 +16,7 @@ use shvproto::{List, Map, RpcValue};
 use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use tokio::sync::RwLock;
 use std::backtrace::Backtrace;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Sender};
@@ -57,7 +58,7 @@ enum DbPool {
 }
 
 struct State {
-    db_pool: DbPool,
+    db_pools: HashMap<String, DbPool>,
 }
 type SharedState = Arc<RwLock<State>>;
 
@@ -69,9 +70,11 @@ async fn main() -> anyhow::Result<()> {
     let mut settings = ::config::Config::builder();
     if let Some(config_path) = args.config {
         settings = settings.add_source(File::with_name(&config_path));
+    } else {
+        settings = settings.add_source(File::with_name("config.yaml"));
     }
     let settings = settings.set_default("client.url", "tcp://localhost:3755?user=test&password=password")?;
-    let settings = settings.set_default("database.url", "/tmp/qxsqld.sqlite")?;
+    // let settings = settings.set_default("databases", BTreeMap::<String, config::DbConfig>::new())?;
 
     let settings = settings.build()?;
 
@@ -81,7 +84,9 @@ async fn main() -> anyhow::Result<()> {
         config.client.url = url;
     }
     if let Some(database) = args.database {
-        config.database.url = database;
+        config.databases.insert("db01".to_string(), config::DbConfig {
+            url: database,
+        });
     }
 
     if args.print_config {
@@ -90,18 +95,22 @@ async fn main() -> anyhow::Result<()> {
         return Ok(())
     }
 
-    info!("Connecting to database: {}", config.database.url);
-    let db_pool = if config.database.url.starts_with("postgres") {
-        DbPool::Postgres(PgPool::connect(&config.database.url).await?)
-    } else if config.database.url.starts_with("sqlite") {
-        DbPool::Sqlite(SqlitePool::connect(&config.database.url).await?)
-    } else {
-        return Err(anyhow!("Unsupported database scheme"));
-    };
-    info!("Database connected.");
+    let mut db_pools = HashMap::new();
+    for (db_name, db_config) in &config.databases {
+        info!("Connecting to database: {}", db_name);
+        let db_pool = if db_config.url.starts_with("postgres") {
+            DbPool::Postgres(PgPool::connect(&db_config.url).await?)
+        } else if db_config.url.starts_with("sqlite") {
+            DbPool::Sqlite(SqlitePool::connect(&db_config.url).await?)
+        } else {
+            return Err(anyhow!("Unsupported database scheme for {}", db_name));
+        };
+        db_pools.insert(db_name.clone(), db_pool);
+        info!("Database {} connected.", db_name);
+    }
 
     let state = State {
-        db_pool,
+        db_pools,
     };
     let state: SharedState = Arc::new(RwLock::new(state));
 
@@ -220,15 +229,11 @@ async fn process_request(frame: RpcFrame, sender: Sender<RpcFrame>, state: Share
                 "ls" => {
                     match LsParam::from(request.param()) {
                         LsParam::List => {
-                            let list = vec!["sql"];
+                            let list: Vec<String> = state.read().await.db_pools.keys().cloned().collect();
                             Ok(list.into())
                         }
                         LsParam::Exists(dir) => {
-                            if dir == "sql" {
-                                Ok(true.into())
-                            } else {
-                                Ok(false.into())
-                            }
+                            Ok(state.read().await.db_pools.contains_key(&dir).into())
                         }
                     }
                 }
@@ -236,28 +241,32 @@ async fn process_request(frame: RpcFrame, sender: Sender<RpcFrame>, state: Share
                     Err(anyhow!("Unknown method: {unknown_method}"))
                 }
             }
-        } else if shv_path == "sql" {
+        } else if let Some((db_name, _)) = shv_path.split_once('/') {
             let query = request.param().ok_or_else(|| anyhow!("Missing query parameter"))?.as_list();
             let state = state.read().await;
-            match method {
-                "exec" => {
-                    match &state.db_pool {
-                        DbPool::Postgres(pool) => sql_exec_postgres(pool, query).await,
-                        DbPool::Sqlite(pool) => sql_exec_sqlite(pool, query).await,
+            if let Some(db_pool) = state.db_pools.get(db_name) {
+                match method {
+                    "exec" => {
+                        match db_pool {
+                            DbPool::Postgres(pool) => sql_exec_postgres(pool, query).await,
+                            DbPool::Sqlite(pool) => sql_exec_sqlite(pool, query).await,
+                        }
+                    }
+                    "select" => {
+                        match db_pool {
+                            DbPool::Postgres(pool) => sql_select_postgres(pool, query).await,
+                            DbPool::Sqlite(pool) => sql_select_sqlite(pool, query).await,
+                        }
+                    }
+                    unknown_method => {
+                        Err(anyhow!("Unknown method: {unknown_method}"))
                     }
                 }
-                "select" => {
-                    match &state.db_pool {
-                        DbPool::Postgres(pool) => sql_select_postgres(pool, query).await,
-                        DbPool::Sqlite(pool) => sql_select_sqlite(pool, query).await,
-                    }
-                }
-                unknown_method => {
-                    Err(anyhow!("Unknown method: {unknown_method}"))
-                }
+            } else {
+                Err(anyhow!("Unknown database: {db_name}"))
             }
         } else {
-            Err(anyhow!("Unknown path: {shv_path:?}"))
+            Err(anyhow!("Invalid path: {shv_path:?}"))
         }
     };
     let resp_meta = RpcFrame::prepare_response_meta(&frame.meta).map_err(|e| anyhow!("Failed to prepare response meta: {e}"))?;
@@ -448,37 +457,56 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
 
     async fn test_sql_select_with_db(db_pool: DbPool) {
+        let mut db_pools = HashMap::new();
+        let db_name = "test_db".to_string();
+        db_pools.insert(db_name.clone(), db_pool);
         let state = State {
-            db_pool,
+            db_pools,
         };
         let state = Arc::new(RwLock::new(state));
 
         let query = vec![
             "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)".into(),
         ];
-        let res = match &state.read().await.db_pool {
-            DbPool::Postgres(pool) => sql_exec_postgres(pool, &query).await,
-            DbPool::Sqlite(pool) => sql_exec_sqlite(pool, &query).await,
-        };
-        res.unwrap();
+        {
+            let state_guard = state.read().await;
+            let db_pool = state_guard.db_pools.get(&db_name).unwrap();
+            let res = match db_pool {
+                DbPool::Postgres(pool) => sql_exec_postgres(pool, &query).await,
+                DbPool::Sqlite(pool) => sql_exec_sqlite(pool, &query).await,
+            };
+            res.unwrap();
+        }
 
+        let insert_query = match state.read().await.db_pools.get(&db_name).unwrap() {
+            DbPool::Postgres(_) => "INSERT INTO users (id, name) VALUES ($1, $2)",
+            DbPool::Sqlite(_) => "INSERT INTO users (id, name) VALUES (?, ?)",
+        };
         let query = vec![
-            "INSERT INTO users (id, name) VALUES (?, ?)".into(),
+            insert_query.into(),
             1.into(),
             "Jane Doe".into(),
         ];
-        let res = match &state.read().await.db_pool {
-            DbPool::Postgres(pool) => sql_exec_postgres(pool, &query).await,
-            DbPool::Sqlite(pool) => sql_exec_sqlite(pool, &query).await,
-        };
-        res.unwrap();
+        {
+            let state_guard = state.read().await;
+            let db_pool = state_guard.db_pools.get(&db_name).unwrap();
+            let res = match db_pool {
+                DbPool::Postgres(pool) => sql_exec_postgres(pool, &query).await,
+                DbPool::Sqlite(pool) => sql_exec_sqlite(pool, &query).await,
+            };
+            res.unwrap();
+        }
 
         let query = vec![
             "SELECT * FROM users".into(),
         ];
-        let result = match &state.read().await.db_pool {
-            DbPool::Postgres(pool) => sql_select_postgres(pool, &query).await,
-            DbPool::Sqlite(pool) => sql_select_sqlite(pool, &query).await,
+        let result = {
+            let state_guard = state.read().await;
+            let db_pool = state_guard.db_pools.get(&db_name).unwrap();
+            match db_pool {
+                DbPool::Postgres(pool) => sql_select_postgres(pool, &query).await,
+                DbPool::Sqlite(pool) => sql_select_sqlite(pool, &query).await,
+            }
         };
         let expected: List = vec![
             vec![
