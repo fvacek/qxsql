@@ -14,7 +14,7 @@ use shvrpc::util::login_from_url;
 use shvrpc::{RpcMessage, RpcMessageMetaTags};
 use tokio::sync::RwLock;
 use std::backtrace::Backtrace;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Sender};
@@ -27,7 +27,7 @@ mod shvnode;
 mod config;
 mod sql;
 
-use sql::{DbPool, sql_exec_postgres, sql_exec_sqlite, sql_select_postgres, sql_select_sqlite};
+use sql::{sql_exec, sql_select, DbPool};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -54,7 +54,7 @@ struct Args {
 }
 
 struct State {
-    db_pools: HashMap<String, DbPool>,
+    db_pools: BTreeMap<i64, DbPool>,
 }
 type SharedState = Arc<RwLock<State>>;
 
@@ -79,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
         config.client.url = url;
     }
     if let Some(database) = args.database {
-        config.databases.insert("default".to_string(), config::DbConfig {
+        config.event_databases.insert(1, config::DbConfig {
             url: database,
         });
     }
@@ -90,8 +90,8 @@ async fn main() -> anyhow::Result<()> {
         return Ok(())
     }
 
-    let mut db_pools = HashMap::new();
-    for (db_name, db_config) in &config.databases {
+    let mut db_pools = BTreeMap::new();
+    for (db_name, db_config) in &config.event_databases {
         info!("Connecting to database: {}", db_name);
         let db_pool = if db_config.url.starts_with("postgres") {
             DbPool::Postgres(PgPool::connect(&db_config.url).await?)
@@ -214,55 +214,47 @@ async fn process_request(frame: RpcFrame, sender: Sender<RpcFrame>, state: Share
     let request = frame.to_rpcmesage().map_err(rpc_to_anyhow)?;
     let shv_path = frame.shv_path().unwrap_or_default();
     let method = frame.method().ok_or_else(|| anyhow!("Request without method"))?;
-    let result = {
+    let result = 'result: {
         if shv_path.is_empty() {
             match method {
                 "dir" => {
                     let dir = shvnode::dir(PUBLIC_DIR_LS_METHODS.iter(), request.param().into());
-                    Ok(dir)
+                    break 'result Ok(dir)
                 }
                 "ls" => {
+                    let list: Vec<_> = state.read().await.db_pools.keys().map(|k| format!("{k}")).collect();
                     match LsParam::from(request.param()) {
                         LsParam::List => {
-                            let list: Vec<String> = state.read().await.db_pools.keys().cloned().collect();
-                            Ok(list.into())
+                            break 'result Ok(list.into())
                         }
                         LsParam::Exists(dir) => {
-                            Ok(state.read().await.db_pools.contains_key(&dir).into())
+                            break 'result Ok(list.contains(&dir).into())
                         }
                     }
                 }
                 unknown_method => {
-                    Err(anyhow!("Unknown method: {unknown_method}"))
+                    break 'result Err(anyhow!("Unknown method: {unknown_method}"))
                 }
             }
-        } else if let Some((db_name, _)) = shv_path.split_once('/') {
-            let query = request.param().ok_or_else(|| anyhow!("Missing query parameter"))?.as_list();
-            let state = state.read().await;
-            if let Some(db_pool) = state.db_pools.get(db_name) {
-                match method {
-                    "exec" => {
-                        match db_pool {
-                            DbPool::Postgres(pool) => sql_exec_postgres(pool, query).await,
-                            DbPool::Sqlite(pool) => sql_exec_sqlite(pool, query).await,
+        } else if let Some((dir, shv_path)) = shv_path.split_once('/') &&    dir == "api" {
+            if let Some((dir, shv_path)) = shv_path.split_once('/') && dir   == "event" {
+                if let Some((event_id, shv_path)) = shv_path.split_once(     '/') {
+                    if let Ok(event_id) = event_id.parse::<i64>() {
+                        if let Some((dir, shv_path)) = shv_path.split_once('/') && dir == "sql" && shv_path.is_empty() {
+                            let query = request.param().unwrap_or_default().as_list();
+                            match method {
+                                "exec" => break 'result sql_exec(&state, event_id, query).await,
+                                "select" => break 'result sql_select(&state, event_id, query).await,
+                                unknown_method => {
+                                    break 'result Err(anyhow!("Unknown method: {unknown_method}"))
+                                }
+                            }
                         }
-                    }
-                    "select" => {
-                        match db_pool {
-                            DbPool::Postgres(pool) => sql_select_postgres(pool, query).await,
-                            DbPool::Sqlite(pool) => sql_select_sqlite(pool, query).await,
-                        }
-                    }
-                    unknown_method => {
-                        Err(anyhow!("Unknown method: {unknown_method}"))
                     }
                 }
-            } else {
-                Err(anyhow!("Unknown database: {db_name}"))
             }
-        } else {
-            Err(anyhow!("Invalid path: {shv_path:?}"))
         }
+        Err(anyhow!("Invalid path: {shv_path:?}"))
     };
     let resp_meta = RpcFrame::prepare_response_meta(&frame.meta).map_err(|e| anyhow!("Failed to prepare response meta: {e}"))?;
     let mut resp = RpcMessage::from_meta(resp_meta);

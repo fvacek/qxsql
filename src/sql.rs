@@ -1,10 +1,37 @@
 use shvproto::{List, Map, RpcValue};
 use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
+use anyhow::anyhow;
+
+use crate::SharedState;
 
 pub enum DbPool {
     Postgres(PgPool),
     Sqlite(SqlitePool),
+}
+
+pub async fn sql_exec(state: &SharedState, event_id: i64, query: &Vec<RpcValue>) -> anyhow::Result<RpcValue> {
+    let state = state.read().await;
+    if let Some(db_pool) = state.db_pools.get(&event_id) {
+        match db_pool {
+            DbPool::Postgres(pool) => sql_exec_postgres(pool, query).await,
+            DbPool::Sqlite(pool) => sql_exec_sqlite(pool, query).await,
+        }
+    } else {
+        Err(anyhow!("Unknown event id: {event_id}"))
+    }
+}
+
+pub async fn sql_select(state: &SharedState, event_id: i64, query: &Vec<RpcValue>) -> anyhow::Result<RpcValue> {
+    let state = state.read().await;
+    if let Some(db_pool) = state.db_pools.get(&event_id) {
+        match db_pool {
+            DbPool::Postgres(pool) => sql_select_postgres(pool, query).await,
+            DbPool::Sqlite(pool) => sql_select_sqlite(pool, query).await,
+        }
+    } else {
+        Err(anyhow!("Unknown event id: {event_id}"))
+    }
 }
 
 pub async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &Vec<RpcValue>) -> anyhow::Result<RpcValue> {
@@ -245,6 +272,7 @@ mod tests {
             };
             test_sql_select_with_db(db_pool).await;
         } else {
+            warn!(r#"export QXSQLD_POSTGRES_URL= "postgres://myuser:mypassword@localhost/mydb?options=--search_path%3Dmy_app_schema""#);
             warn!("Skipping postgres test, QXSQLD_POSTGRES_URL not set");
         }
     }
