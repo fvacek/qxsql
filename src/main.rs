@@ -1,4 +1,5 @@
-use ::config::File;
+use config::Config;
+
 use anyhow::anyhow;
 use clap::Parser;
 use futures::select;
@@ -15,13 +16,14 @@ use shvrpc::{RpcMessage, RpcMessageMetaTags};
 use tokio::sync::RwLock;
 use std::backtrace::Backtrace;
 use std::collections::BTreeMap;
+use std::fs;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::time::sleep;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use futures_util::FutureExt;
-use sqlx::{postgres::PgPool, SqlitePool};
+use sqlx::SqlitePool;
 
 mod shvnode;
 mod config;
@@ -44,9 +46,9 @@ struct Args {
     #[arg(short, long)]
     database: Option<String>,
 
-    /// SHV path to mount the service on
+    /// Path where event qbe files can be found
     #[arg(short, long)]
-    path: Option<String>,
+    qbe_path: Option<String>,
 
     /// Print effective config
     #[arg(long)]
@@ -64,17 +66,13 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
     let args = Args::parse();
 
-    let mut settings = ::config::Config::builder();
-    if let Some(config_path) = args.config {
-        settings = settings.add_source(File::with_name(&config_path));
+    let mut config = if let Some(config_path) = args.config {
+        info!("Loading config file {config_path}");
+        let content = fs::read_to_string(config_path)?;
+        serde_yaml::from_str(&content)?
     } else {
-        settings = settings.add_source(File::with_name("config.yaml"));
-    }
-    let settings = settings.set_default("client.url", "tcp://localhost:3755?user=test&password=password")?;
-
-    let settings = settings.build()?;
-
-    let mut config: config::Config = settings.try_deserialize()?;
+        Config::default()
+    };
 
     if let Some(url) = args.url {
         config.client.url = url;
@@ -94,6 +92,8 @@ async fn main() -> anyhow::Result<()> {
             return Err(anyhow!("Unsupported database scheme for {}", config.database.url));
         };
         info!("Connecting to events database: {} ... OK", config.database.url);
+        sqlx::migrate!("./db/migrations").run(&db_pool).await?;
+        info!("Database migration ... OK");
         db_pool
     };
 
