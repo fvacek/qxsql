@@ -54,7 +54,8 @@ struct Args {
 }
 
 struct State {
-    db_pools: BTreeMap<i64, DbPool>,
+    app_db: SqlitePool,
+    event_db_pools: BTreeMap<i64, DbPool>,
 }
 type SharedState = Arc<RwLock<State>>;
 
@@ -79,9 +80,7 @@ async fn main() -> anyhow::Result<()> {
         config.client.url = url;
     }
     if let Some(database) = args.database {
-        config.event_databases.insert(1, config::DbConfig {
-            url: database,
-        });
+        config.database = config::DbConfig { url: database, };
     }
 
     if args.print_config {
@@ -90,22 +89,31 @@ async fn main() -> anyhow::Result<()> {
         return Ok(())
     }
 
-    let mut db_pools = BTreeMap::new();
-    for (db_name, db_config) in &config.event_databases {
-        info!("Connecting to database: {}", db_name);
-        let db_pool = if db_config.url.starts_with("postgres") {
-            DbPool::Postgres(PgPool::connect(&db_config.url).await?)
-        } else if db_config.url.starts_with("sqlite") {
-            DbPool::Sqlite(SqlitePool::connect(&db_config.url).await?)
-        } else {
-            return Err(anyhow!("Unsupported database scheme for {}", db_name));
+    let app_db = {
+        let Ok(db_pool) = SqlitePool::connect(&config.database.url).await else {
+            return Err(anyhow!("Unsupported database scheme for {}", config.database.url));
         };
-        db_pools.insert(db_name.clone(), db_pool);
-        info!("Database {} connected.", db_name);
-    }
+        info!("Connecting to events database: {} ... OK", config.database.url);
+        db_pool
+    };
+
+    // let mut event_db_pools = BTreeMap::new();
+    // for (db_name, db_config) in &config.event_databases {
+    //     info!("Connecting to database: {}", db_name);
+    //     let db_pool = if db_config.url.starts_with("postgres") {
+    //         DbPool::Postgres(PgPool::connect(&db_config.url).await?)
+    //     } else if db_config.url.starts_with("sqlite") {
+    //         DbPool::Sqlite(SqlitePool::connect(&db_config.url).await?)
+    //     } else {
+    //         return Err(anyhow!("Unsupported database scheme for {}", db_name));
+    //     };
+    //     db_pools.insert(db_name.clone(), db_pool);
+    //     info!("Database {} connected.", db_name);
+    // }
 
     let state = State {
-        db_pools,
+        app_db,
+        event_db_pools: BTreeMap::new(),
     };
     let state: SharedState = Arc::new(RwLock::new(state));
 
@@ -222,7 +230,7 @@ async fn process_request(frame: RpcFrame, sender: Sender<RpcFrame>, state: Share
                     break 'result Ok(dir)
                 }
                 "ls" => {
-                    let list: Vec<_> = state.read().await.db_pools.keys().map(|k| format!("{k}")).collect();
+                    let list: Vec<_> = state.read().await.event_db_pools.keys().map(|k| format!("{k}")).collect();
                     match LsParam::from(request.param()) {
                         LsParam::List => {
                             break 'result Ok(list.into())

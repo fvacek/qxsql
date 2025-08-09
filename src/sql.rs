@@ -12,7 +12,7 @@ pub enum DbPool {
 
 pub async fn sql_exec(state: &SharedState, event_id: i64, query: &Vec<RpcValue>) -> anyhow::Result<RpcValue> {
     let state = state.read().await;
-    if let Some(db_pool) = state.db_pools.get(&event_id) {
+    if let Some(db_pool) = state.event_db_pools.get(&event_id) {
         match db_pool {
             DbPool::Postgres(pool) => sql_exec_postgres(pool, query).await,
             DbPool::Sqlite(pool) => sql_exec_sqlite(pool, query).await,
@@ -24,7 +24,7 @@ pub async fn sql_exec(state: &SharedState, event_id: i64, query: &Vec<RpcValue>)
 
 pub async fn sql_select(state: &SharedState, event_id: i64, query: &Vec<RpcValue>) -> anyhow::Result<RpcValue> {
     let state = state.read().await;
-    if let Some(db_pool) = state.db_pools.get(&event_id) {
+    if let Some(db_pool) = state.event_db_pools.get(&event_id) {
         match db_pool {
             DbPool::Postgres(pool) => sql_select_postgres(pool, query).await,
             DbPool::Sqlite(pool) => sql_select_sqlite(pool, query).await,

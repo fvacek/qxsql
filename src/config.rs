@@ -1,11 +1,9 @@
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub client: ClientConfig,
-    pub event_databases: BTreeMap<i64, DbConfig>,
+    pub database: DbConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
