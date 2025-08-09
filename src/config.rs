@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub client: ClientConfig,
-    pub databases: BTreeMap<String, DbConfig>,
+    pub databases: HashMap<String, DbConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
