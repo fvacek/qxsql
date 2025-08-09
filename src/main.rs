@@ -13,7 +13,7 @@ use shvrpc::streamrw::{StreamFrameReader, StreamFrameWriter};
 use shvrpc::util::login_from_url;
 use shvrpc::{RpcMessage, RpcMessageMetaTags};
 use shvproto::{List, Map, RpcValue};
-use sqlx::{AnyPool, Pool, Postgres, Sqlite, any::AnyRow, sqlite::SqliteRow, postgres::PgRow};
+use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use tokio::sync::RwLock;
 use std::backtrace::Backtrace;
 use std::sync::Arc;
@@ -54,7 +54,6 @@ struct Args {
 enum DbPool {
     Postgres(PgPool),
     Sqlite(SqlitePool),
-    Any(AnyPool),
 }
 
 struct State {
@@ -97,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
     } else if config.database.url.starts_with("sqlite") {
         DbPool::Sqlite(SqlitePool::connect(&config.database.url).await?)
     } else {
-        DbPool::Any(AnyPool::connect(&config.database.url).await?)
+        return Err(anyhow!("Unsupported database scheme"));
     };
     info!("Database connected.");
 
@@ -245,14 +244,12 @@ async fn process_request(frame: RpcFrame, sender: Sender<RpcFrame>, state: Share
                     match &state.db_pool {
                         DbPool::Postgres(pool) => sql_exec_postgres(pool, query).await,
                         DbPool::Sqlite(pool) => sql_exec_sqlite(pool, query).await,
-                        DbPool::Any(pool) => sql_exec_any(pool, query).await,
                     }
                 }
                 "select" => {
                     match &state.db_pool {
                         DbPool::Postgres(pool) => sql_select_postgres(pool, query).await,
                         DbPool::Sqlite(pool) => sql_select_sqlite(pool, query).await,
-                        DbPool::Any(pool) => sql_select_any(pool, query).await,
                     }
                 }
                 unknown_method => {
@@ -305,33 +302,6 @@ async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &Vec<RpcValue>) -> anyho
     Ok(RpcValue::from(result.rows_affected()))
 }
 async fn sql_exec_postgres(db_pool: &Pool<Postgres>, query: &Vec<RpcValue>) -> anyhow::Result<RpcValue> {
-    let mut sql = "".to_string();
-    let mut params: Vec<RpcValue> = vec![];
-    for (i, val) in query.iter().enumerate() {
-        if i == 0 {
-            sql = val.as_str().to_string();
-        } else {
-            params.push(val.clone());
-        }
-    }
-    let mut query = sqlx::query(&sql);
-    for param in &params {
-        if param.is_string() {
-            query = query.bind(param.as_str());
-        } else if param.is_int() {
-            query = query.bind(param.as_i64());
-        } else if param.is_bool() {
-            query = query.bind(param.as_bool());
-        } else if param.is_null() {
-            query = query.bind(None::<&str>);
-        } else {
-            todo!()
-        }
-    }
-    let result = query.execute(db_pool).await?;
-    Ok(RpcValue::from(result.rows_affected()))
-}
-async fn sql_exec_any(db_pool: &AnyPool, query: &Vec<RpcValue>) -> anyhow::Result<RpcValue> {
     let mut sql = "".to_string();
     let mut params: Vec<RpcValue> = vec![];
     for (i, val) in query.iter().enumerate() {
@@ -432,43 +402,6 @@ async fn sql_select_postgres(db_pool: &Pool<Postgres>, query: &Vec<RpcValue>) ->
     }
     Ok(result.into())
 }
-async fn sql_select_any(db_pool: &AnyPool, query: &Vec<RpcValue>) -> anyhow::Result<RpcValue> {
-    let mut sql = "".to_string();
-    let mut params: Vec<RpcValue> = vec![];
-    for (i, val) in query.iter().enumerate() {
-        if i == 0 {
-            sql = val.as_str().to_string();
-        } else {
-            params.push(val.clone());
-        }
-    }
-    let mut query = sqlx::query(&sql);
-    for param in &params {
-        if param.is_string() {
-            query = query.bind(param.as_str());
-        } else if param.is_int() {
-            query = query.bind(param.as_i64());
-        } else if param.is_bool() {
-            query = query.bind(param.as_bool());
-        } else if param.is_null() {
-            query = query.bind(None::<&str>);
-        } else {
-            todo!()
-        }
-    }
-    let rows = query.fetch_all(db_pool).await?;
-    let mut result = List::new();
-    for row in rows {
-        let mut map = Map::new();
-        for (i, col) in row.columns().iter().enumerate() {
-            let col_name = col.name();
-            let val = rpc_value_from_any_row(&row, i)?;
-            map.insert(col_name.to_string(), val);
-        }
-        result.push(map.into());
-    }
-    Ok(result.into())
-}
 
 fn rpc_value_from_sqlite_row(row: &SqliteRow, index: usize) -> anyhow::Result<RpcValue> {
     let val = row.try_get_raw(index)?;
@@ -488,23 +421,6 @@ fn rpc_value_from_sqlite_row(row: &SqliteRow, index: usize) -> anyhow::Result<Rp
     }
 }
 fn rpc_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<RpcValue> {
-    let val = row.try_get_raw(index)?;
-    let type_name = val.type_info().name().to_uppercase();
-    if val.is_null() {
-        return Ok(RpcValue::null());
-    }
-    if type_name.contains("TEXT") || type_name.contains("STRING") || type_name.contains("VARCHAR") {
-        Ok(RpcValue::from(row.get::<Option<String>, _>(index)))
-    } else if type_name.contains("INT") {
-        Ok(RpcValue::from(row.get::<Option<i64>, _>(index)))
-    } else if type_name.contains("BOOL") {
-        Ok(RpcValue::from(row.get::<Option<bool>, _>(index)))
-    } else {
-        // fallback to string
-        Ok(RpcValue::from(row.get::<Option<String>, _>(index)))
-    }
-}
-fn rpc_value_from_any_row(row: &AnyRow, index: usize) -> anyhow::Result<RpcValue> {
     let val = row.try_get_raw(index)?;
     let type_name = val.type_info().name().to_uppercase();
     if val.is_null() {
@@ -543,7 +459,6 @@ mod tests {
         let res = match &state.read().await.db_pool {
             DbPool::Postgres(pool) => sql_exec_postgres(pool, &query).await,
             DbPool::Sqlite(pool) => sql_exec_sqlite(pool, &query).await,
-            DbPool::Any(pool) => sql_exec_any(pool, &query).await,
         };
         res.unwrap();
 
@@ -555,7 +470,6 @@ mod tests {
         let res = match &state.read().await.db_pool {
             DbPool::Postgres(pool) => sql_exec_postgres(pool, &query).await,
             DbPool::Sqlite(pool) => sql_exec_sqlite(pool, &query).await,
-            DbPool::Any(pool) => sql_exec_any(pool, &query).await,
         };
         res.unwrap();
 
@@ -565,7 +479,6 @@ mod tests {
         let result = match &state.read().await.db_pool {
             DbPool::Postgres(pool) => sql_select_postgres(pool, &query).await,
             DbPool::Sqlite(pool) => sql_select_sqlite(pool, &query).await,
-            DbPool::Any(pool) => sql_select_any(pool, &query).await,
         };
         let expected: List = vec![
             vec![
@@ -601,7 +514,6 @@ mod tests {
             };
             test_sql_select_with_db(db_pool).await;
         } else {
-            print!(r#"export QXSQLD_POSTGRES_URL= "postgres://myuser:mypassword@localhost/mydb?options=--search_path%3Dmy_app_schema""#);
             warn!("Skipping postgres test, QXSQLD_POSTGRES_URL not set");
         }
     }
