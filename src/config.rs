@@ -17,3 +17,11 @@ pub struct ClientConfig {
 pub struct DbConfig {
     pub url: String,
 }
+
+impl Default for DbConfig {
+    fn default() -> Self {
+        Self {
+            url: "sqlite:memory:".to_string(),
+        }
+    }
+}

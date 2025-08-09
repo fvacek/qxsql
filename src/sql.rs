@@ -170,3 +170,82 @@ pub fn rpc_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<
         Ok(RpcValue::from(row.get::<Option<String>, _>(index)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shvproto::{List, Map, RpcValue};
+    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::postgres::PgPoolOptions;
+    use log::warn;
+
+    async fn test_sql_select_with_db(db_pool: DbPool) {
+        let query = vec![
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)".into(),
+        ];
+        let res = match &db_pool {
+            DbPool::Postgres(pool) => sql_exec_postgres(pool, &query).await,
+            DbPool::Sqlite(pool) => sql_exec_sqlite(pool, &query).await,
+        };
+        res.unwrap();
+
+        let insert_query = match &db_pool {
+            DbPool::Postgres(_) => "INSERT INTO users (id, name) VALUES ($1, $2)",
+            DbPool::Sqlite(_) => "INSERT INTO users (id, name) VALUES (?, ?)",
+        };
+        let query = vec![
+            insert_query.into(),
+            1.into(),
+            "Jane Doe".into(),
+        ];
+        let res = match &db_pool {
+            DbPool::Postgres(pool) => sql_exec_postgres(pool, &query).await,
+            DbPool::Sqlite(pool) => sql_exec_sqlite(pool, &query).await,
+        };
+        res.unwrap();
+
+        let query = vec![
+            "SELECT * FROM users".into(),
+        ];
+        let result = match &db_pool {
+            DbPool::Postgres(pool) => sql_select_postgres(pool, &query).await,
+            DbPool::Sqlite(pool) => sql_select_sqlite(pool, &query).await,
+        };
+        let expected: List = vec![
+            vec![
+                ("id".to_string(), 1.into()),
+                ("name".to_string(), "Jane Doe".into()),
+            ].into_iter().collect::<Map>().into()
+        ].into();
+        assert_eq!(result.unwrap(), RpcValue::from(expected));
+    }
+
+    #[tokio::test]
+    async fn test_sql_select() {
+        let db_pool = DbPool::Sqlite(SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap());
+        test_sql_select_with_db(db_pool).await;
+    }
+
+    #[tokio::test]
+    async fn test_postgres_sql_select() {
+        if let Ok(db_url) = std::env::var("QXSQLD_POSTGRES_URL") {
+            let db_pool = DbPool::Postgres(PgPoolOptions::new()
+                .connect(&db_url)
+                .await
+                .unwrap());
+            let _ = match &db_pool {
+                DbPool::Postgres(pool) => {
+                    let query = vec!["DROP TABLE IF EXISTS users".into()];
+                    sql_exec_postgres(pool, &query).await
+                },
+                _ => panic!("not a postgres pool"),
+            };
+            test_sql_select_with_db(db_pool).await;
+        } else {
+            warn!("Skipping postgres test, QXSQLD_POSTGRES_URL not set");
+        }
+    }
+}
