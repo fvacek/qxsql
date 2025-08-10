@@ -1,4 +1,6 @@
+use serde::{Deserialize, Serialize};
 use shvproto::{List, Map, RpcValue};
+use sqlx::prelude::FromRow;
 use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
 use anyhow::anyhow;
@@ -196,6 +198,13 @@ pub fn rpc_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<
         // fallback to string
         Ok(RpcValue::from(row.get::<Option<String>, _>(index)))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, FromRow)]
+pub(crate) struct EventRecord {
+    pub id: i64,
+    pub api_token: String,
+    pub owner: String,
 }
 
 #[cfg(test)]

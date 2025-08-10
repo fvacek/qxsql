@@ -1059,7 +1059,7 @@ checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
 [[package]]
 name = "libshvproto-macros"
 version = "0.2.0"
-source = "git+https://github.com/silicon-heaven/libshvproto-rs?branch=master#14b39cd29e3fadd257b06deed4b66561b3fe30ee"
+source = "git+https://github.com/silicon-heaven/libshvproto-rs?branch=master#810c8f69d14d74da25da1559e5951c7b9b88503a"
 dependencies = [
  "convert_case",
  "proc-macro2",
@@ -1690,14 +1690,15 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "shvproto"
-version = "3.4.0"
-source = "git+https://github.com/silicon-heaven/libshvproto-rs?branch=master#14b39cd29e3fadd257b06deed4b66561b3fe30ee"
+version = "3.5.0"
+source = "git+https://github.com/silicon-heaven/libshvproto-rs?branch=master#810c8f69d14d74da25da1559e5951c7b9b88503a"
 dependencies = [
  "chrono",
  "clap",
  "hex",
  "libshvproto-macros",
  "log",
+ "serde",
 ]
 
 [[package]]

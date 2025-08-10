@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 shvrpc = { git = "https://github.com/silicon-heaven/libshvrpc-rs" }
-shvproto = { git = "https://github.com/silicon-heaven/libshvproto-rs", branch = "master" }
+shvproto = { git = "https://github.com/silicon-heaven/libshvproto-rs", branch = "master", features = ["serde"]}
 futures = "0.3.30"
 futures-util = "0.3.30"
 tokio = { version = "1", features = ["full"] }
@@ -19,3 +19,7 @@ url = "2.2"
 env_logger = "0.9"
 anyhow = "1.0"
 serde_yaml = "0.9"
+
+# For local development
+# [patch."https://github.com/silicon-heaven/libshvproto-rs"]
+# shvproto = { path = "../shvrs/libshvproto-rs" }

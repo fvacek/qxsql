@@ -5,11 +5,12 @@ use clap::Parser;
 use env_logger::Env;
 use futures::select;
 use log::{debug, error, info, warn};
-use shvnode::PUBLIC_DIR_LS_METHODS;
-use shvproto::RpcValue;
+use serde::{Deserialize, Serialize};
+use shvnode::{METH_GET, METH_SET, PUBLIC_DIR_LS_METHODS};
+use shvproto::{from_rpcvalue, to_rpcvalue, RpcValue};
 use shvrpc::client::{self, LoginParams};
 use shvrpc::framerw::{FrameReader, FrameWriter};
-use shvrpc::metamethod::MetaMethod;
+use shvrpc::metamethod::{AccessLevel, Flag, MetaMethod};
 use shvrpc::rpcdiscovery::LsParam;
 use shvrpc::rpcframe::RpcFrame;
 use shvrpc::rpcmessage::{RpcError, RpcErrorCode};
@@ -143,6 +144,11 @@ fn rpc_to_anyhow(err: shvrpc::Error) -> anyhow::Error {
     error!("RPC Error: {err}\nbacktrace: {}", Backtrace::capture());
     anyhow!("RPC error: {}", err)
 }
+pub(crate) fn sqlx_to_anyhow(err: sqlx::Error) -> anyhow::Error {
+    error!("SQL Error: {err}\nbacktrace: {}", Backtrace::capture());
+    anyhow!("SQL error: {}", err)
+}
+
 async fn broker_peer_loop(url: url::Url, mut frame_reader: impl FrameReader + Send, mut frame_writer: impl FrameWriter + Send, state: SharedState) -> anyhow::Result<()> {
     // login
     let (user, password) = login_from_url(&url);
@@ -275,11 +281,45 @@ async fn process_request(frame: RpcFrame, sender: Sender<RpcFrame>, state: Share
                             }
                         }
                     } else {
-                        let db_pool = state.read().await.app_db.clone();
-                        let ids = sqlx::query("SELECT id FROM events ORDER BY id")
-                            .map(|row: SqliteRow| { row.get::<i64, _>(0).to_string() })
-                            .fetch_all(&db_pool).await?;
-                        break 'result process_dir_ls(method, param, PUBLIC_DIR_LS_METHODS.iter(), ids.iter().map(|s| s.as_str()));
+                        match method {
+                            METH_GET => {
+                                let event_id = param.unwrap_or_default().as_i64();
+                                let db_pool = state.read().await.app_db.clone();
+                                let rec = sqlx::query_as::<_, sql::EventRecord>("SELECT * FROM events WHERE id=?")
+                                    .bind(event_id)
+                                    .fetch_one(&db_pool).await?;
+                                break 'result to_rpcvalue(&rec).map_err(|e| anyhow!(e))
+                            }
+                            METH_SET => {
+                                #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+                                struct SetValueParams (i64, sql::EventRecord);
+                                match from_rpcvalue::<SetValueParams>(param.unwrap_or_default()) {
+                                    Ok(SetValueParams(event_id, value)) => {
+                                        if event_id == 0 {
+                                            break 'result Err(anyhow!("Invalid event ID"));
+                                        }
+                                        let db_pool = state.read().await.app_db.clone();
+                                        break 'result sqlx::query("UPDATE events SET (api_token, owner) VALUES (?, ?) WHERE id=?")
+                                            .bind(value.api_token)
+                                            .bind(value.owner)
+                                            .bind(event_id)
+                                            .execute(&db_pool).await
+                                            .map(|_| RpcValue::null())
+                                            .map_err(sqlx_to_anyhow)
+                                    }
+                                    Err(e) => break 'result Err(anyhow!(e))
+                                };
+                            }
+                            _ => {
+                                let db_pool = state.read().await.app_db.clone();
+                                let ids = sqlx::query("SELECT id FROM events ORDER BY id")
+                                    .map(|row: SqliteRow| { row.get::<i64, _>(0).to_string() })
+                                    .fetch_all(&db_pool).await?;
+                                pub const META_METHOD_GET: MetaMethod = MetaMethod { name: METH_GET, flags: Flag::IsGetter as u32, access: AccessLevel::Read, param: "Any", result: "Any", signals: &[("recchng", Some("i(0,)"))], description: "" };
+                                pub const META_METHOD_SET: MetaMethod = MetaMethod { name: METH_SET, flags: Flag::IsSetter as u32, access: AccessLevel::Write, param: "Any", result: "n", signals: &[], description: "" };
+                                break 'result process_dir_ls(method, param, PUBLIC_DIR_LS_METHODS.iter().chain([META_METHOD_GET, META_METHOD_SET].iter()), ids.iter().map(|s| s.as_str()));
+                            }
+                        }
                     }
                 } else {
                     break 'result process_dir_ls(method, param, PUBLIC_DIR_LS_METHODS.iter(), [EVENT_DIR].iter().copied());
