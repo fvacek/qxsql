@@ -1,9 +1,19 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub client: ClientConfig,
     pub database: DbConfig,
+    pub qbe_path: String,
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            qbe_path: "qbe".to_string(),
+            client: Default::default(),
+            database: Default::default(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

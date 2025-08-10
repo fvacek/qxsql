@@ -2,17 +2,22 @@ use config::Config;
 
 use anyhow::anyhow;
 use clap::Parser;
+use env_logger::Env;
 use futures::select;
 use log::{debug, error, info, warn};
 use shvnode::PUBLIC_DIR_LS_METHODS;
+use shvproto::RpcValue;
 use shvrpc::client::{self, LoginParams};
 use shvrpc::framerw::{FrameReader, FrameWriter};
+use shvrpc::metamethod::MetaMethod;
 use shvrpc::rpcdiscovery::LsParam;
 use shvrpc::rpcframe::RpcFrame;
 use shvrpc::rpcmessage::{RpcError, RpcErrorCode};
 use shvrpc::streamrw::{StreamFrameReader, StreamFrameWriter};
 use shvrpc::util::login_from_url;
 use shvrpc::{RpcMessage, RpcMessageMetaTags};
+use sqlx::sqlite::{SqlitePoolOptions, SqliteRow};
+use sqlx::Row;
 use tokio::sync::RwLock;
 use std::backtrace::Backtrace;
 use std::collections::BTreeMap;
@@ -63,7 +68,7 @@ type SharedState = Arc<RwLock<State>>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     let args = Args::parse();
 
     let mut config = if let Some(config_path) = args.config {
@@ -87,29 +92,23 @@ async fn main() -> anyhow::Result<()> {
         return Ok(())
     }
 
-    let app_db = {
-        let Ok(db_pool) = SqlitePool::connect(&config.database.url).await else {
-            return Err(anyhow!("Unsupported database scheme for {}", config.database.url));
-        };
-        info!("Connecting to events database: {} ... OK", config.database.url);
-        sqlx::migrate!("./db/migrations").run(&db_pool).await?;
-        info!("Database migration ... OK");
-        db_pool
+    info!("==================================");
+    info!("Starting application {}", env!("CARGO_PKG_NAME"));
+    info!("==================================");
+    info!("Connecting to app database: {}", config.database.url);
+    let app_db = match SqlitePoolOptions::new().connect("sqlite::memory:").await {
+        Ok(db_pool) => {
+            info!("Connecting to app database: OK");
+            if let Err(e) = sqlx::migrate!("./db/migrations").run(&db_pool).await {
+                return Err(anyhow!("Database migration failed: {e}"));
+            }
+            info!("Database migration ... OK");
+            db_pool
+        }
+        Err(e) => {
+            return Err(anyhow!("Cannot connect to app database: {e}"));
+        }
     };
-
-    // let mut event_db_pools = BTreeMap::new();
-    // for (db_name, db_config) in &config.event_databases {
-    //     info!("Connecting to database: {}", db_name);
-    //     let db_pool = if db_config.url.starts_with("postgres") {
-    //         DbPool::Postgres(PgPool::connect(&db_config.url).await?)
-    //     } else if db_config.url.starts_with("sqlite") {
-    //         DbPool::Sqlite(SqlitePool::connect(&db_config.url).await?)
-    //     } else {
-    //         return Err(anyhow!("Unsupported database scheme for {}", db_name));
-    //     };
-    //     db_pools.insert(db_name.clone(), db_pool);
-    //     info!("Database {} connected.", db_name);
-    // }
 
     let state = State {
         app_db,
@@ -118,16 +117,17 @@ async fn main() -> anyhow::Result<()> {
     let state: SharedState = Arc::new(RwLock::new(state));
 
     let url = url::Url::parse(&config.client.url)?;
-    broker_peer_loop_from_url(url, state).await?;
-
-    Ok(())
+    match broker_peer_loop_from_url(url, state).await {
+        Ok(()) => Ok(()),
+        Err(e) => Err(anyhow!("Broker peer loop error: {e}")),
+    }
 }
 
 async fn broker_peer_loop_from_url(url: url::Url, state: SharedState) -> anyhow::Result<()> {
     let (host, port) = (url.host_str().unwrap_or_default(), url.port().unwrap_or(3755));
     let address = format!("{}:{}", host, port);
     // Establish a connection
-    debug!("Connecting to broker TCP peer: {address}");
+    info!("Connecting to broker TCP peer: {address}");
     let stream = TcpStream::connect(&address).await?;
     let (reader, writer) = stream.into_split();
     let reader = tokio::io::BufReader::new(reader).compat();
@@ -136,7 +136,7 @@ async fn broker_peer_loop_from_url(url: url::Url, state: SharedState) -> anyhow:
     let peer_id = 1;
     let frame_reader = StreamFrameReader::new(reader).with_peer_id(peer_id);
     let frame_writer = StreamFrameWriter::new(writer).with_peer_id(peer_id);
-    return broker_peer_loop(url, frame_reader, frame_writer, state).await
+    broker_peer_loop(url, frame_reader, frame_writer, state).await
 }
 
 fn rpc_to_anyhow(err: shvrpc::Error) -> anyhow::Error {
@@ -216,49 +216,73 @@ async fn process_broker_client_peer_frame(frame: RpcFrame, sender: Sender<RpcFra
     Ok(())
 }
 
+fn process_dir_ls<'a, 'b>(method: &str, param: Option<&RpcValue>,
+    methods: impl Iterator<Item=&'a MetaMethod>,
+    mut dirs: impl Iterator<Item=&'b str>) -> anyhow::Result<RpcValue> {
+    match method {
+        "dir" => {
+            let dir = shvnode::dir(methods, param.into());
+            Ok(dir)
+        }
+        "ls" => {
+            // let list: Vec<_> = state.read().await.event_db_pools.keys().map(|k| format!("{k}")).collect();
+            match LsParam::from(param) {
+                LsParam::List => {
+                    Ok(dirs.collect::<Vec<_>>().into())
+                }
+                LsParam::Exists(dir) => {
+                    Ok(dirs.any(|d| d == dir).into())
+                }
+            }
+        }
+        unknown_method => {
+            Err(anyhow!("Unknown method: {unknown_method}"))
+        }
+    }
+}
+
 async fn process_request(frame: RpcFrame, sender: Sender<RpcFrame>, state: SharedState) -> anyhow::Result<()> {
     debug!("Processing frame from broker: {frame:?}");
     assert!(frame.is_request());
     let request = frame.to_rpcmesage().map_err(rpc_to_anyhow)?;
     let shv_path = frame.shv_path().unwrap_or_default();
     let method = frame.method().ok_or_else(|| anyhow!("Request without method"))?;
+    let param = request.param();
     let result = 'result: {
-        if shv_path.is_empty() {
-            match method {
-                "dir" => {
-                    let dir = shvnode::dir(PUBLIC_DIR_LS_METHODS.iter(), request.param().into());
-                    break 'result Ok(dir)
-                }
-                "ls" => {
-                    let list: Vec<_> = state.read().await.event_db_pools.keys().map(|k| format!("{k}")).collect();
-                    match LsParam::from(request.param()) {
-                        LsParam::List => {
-                            break 'result Ok(list.into())
-                        }
-                        LsParam::Exists(dir) => {
-                            break 'result Ok(list.contains(&dir).into())
-                        }
-                    }
-                }
-                unknown_method => {
-                    break 'result Err(anyhow!("Unknown method: {unknown_method}"))
-                }
+        const API_DIR: &str = "api";
+        const EVENT_DIR: &str = "event";
+        const SQL_DIR: &str = "sql";
+        let mut dirs = shv_path.split('/');
+        if let Some(dir) = dirs.next() {
+            if dir.is_empty() {
+                break 'result process_dir_ls(method, param, PUBLIC_DIR_LS_METHODS.iter(), [API_DIR].iter().copied());
             }
-        } else if let Some((dir, shv_path)) = shv_path.split_once('/') &&    dir == "api" {
-            if let Some((dir, shv_path)) = shv_path.split_once('/') && dir   == "event" {
-                if let Some((event_id, shv_path)) = shv_path.split_once(     '/') {
-                    if let Ok(event_id) = event_id.parse::<i64>() {
-                        if let Some((dir, shv_path)) = shv_path.split_once('/') && dir == "sql" && shv_path.is_empty() {
-                            let query = request.param().unwrap_or_default().as_list();
-                            match method {
-                                "exec" => break 'result sql_exec(&state, event_id, query).await,
-                                "select" => break 'result sql_select(&state, event_id, query).await,
-                                unknown_method => {
-                                    break 'result Err(anyhow!("Unknown method: {unknown_method}"))
+            if dir == API_DIR {
+                if let Some(dir) = dirs.next() && dir == EVENT_DIR {
+                    if let Some(event_id) = dirs.next() {
+                        if let Ok(event_id) = event_id.parse::<i64>() {
+                            if let Some(dir) = dirs.next() && dir == SQL_DIR {
+                                if dirs.next().is_none() {
+                                    let query = request.param().unwrap_or_default().as_list();
+                                    match method {
+                                        "exec" => break 'result sql_exec(&state, event_id, query).await,
+                                        "select" => break 'result sql_select(&state, event_id, query).await,
+                                        unknown_method => {
+                                            break 'result Err(anyhow!("Unknown method: {unknown_method}"))
+                                        }
+                                    }
                                 }
                             }
                         }
+                    } else {
+                        let db_pool = state.read().await.app_db.clone();
+                        let ids = sqlx::query("SELECT id FROM events ORDER BY id")
+                            .map(|row: SqliteRow| { row.get::<i64, _>(0).to_string() })
+                            .fetch_all(&db_pool).await?;
+                        break 'result process_dir_ls(method, param, PUBLIC_DIR_LS_METHODS.iter(), ids.iter().map(|s| s.as_str()));
                     }
+                } else {
+                    break 'result process_dir_ls(method, param, PUBLIC_DIR_LS_METHODS.iter(), [EVENT_DIR].iter().copied());
                 }
             }
         }
