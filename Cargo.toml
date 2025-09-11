@@ -19,6 +19,7 @@ url = "2.2"
 env_logger = "0.9"
 anyhow = "1.0"
 serde_yaml = "0.9"
+regex = "1.9"
 
 # For local development
 # [patch."https://github.com/silicon-heaven/libshvproto-rs"]

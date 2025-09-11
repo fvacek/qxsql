@@ -1,42 +1,30 @@
 use serde::{Deserialize, Serialize};
+use shvrpc::client::ClientConfig;
+use url::Url;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub client: ClientConfig,
-    pub database: DbConfig,
-    pub qbe_path: String,
+    pub db: DbConfig,
 }
 impl Default for Config {
     fn default() -> Self {
         Self {
-            qbe_path: "qbe".to_string(),
+            db: Default::default(),
             client: Default::default(),
-            database: Default::default(),
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ClientConfig {
-    pub url: String,
-}
-impl Default for ClientConfig {
-    fn default() -> Self {
-        Self {
-            url: "tcp://localhost:3755?user=test&password=password".to_string(),
         }
     }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DbConfig {
-    pub url: String,
+    pub url: Url,
 }
 
 impl Default for DbConfig {
     fn default() -> Self {
         Self {
-            url: "sqlite:memory:".to_string(),
+            url: Url::parse("sqlite:memory:").unwrap(),
         }
     }
 }

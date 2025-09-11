@@ -1,27 +1,26 @@
 use config::Config;
-
 use anyhow::anyhow;
 use clap::Parser;
 use env_logger::Env;
 use futures::select;
 use log::{debug, error, info, warn};
-use serde::{Deserialize, Serialize};
-use shvnode::{METH_GET, METH_SET, PUBLIC_DIR_LS_METHODS};
-use shvproto::{from_rpcvalue, to_rpcvalue, RpcValue};
+use shvnode::PUBLIC_DIR_LS_METHODS;
+use shvproto::RpcValue;
 use shvrpc::client::{self, LoginParams};
 use shvrpc::framerw::{FrameReader, FrameWriter};
-use shvrpc::metamethod::{AccessLevel, Flag, MetaMethod};
+use shvrpc::metamethod::MetaMethod;
 use shvrpc::rpcdiscovery::LsParam;
 use shvrpc::rpcframe::RpcFrame;
 use shvrpc::rpcmessage::{RpcError, RpcErrorCode};
 use shvrpc::streamrw::{StreamFrameReader, StreamFrameWriter};
 use shvrpc::util::login_from_url;
 use shvrpc::{RpcMessage, RpcMessageMetaTags};
-use sqlx::sqlite::{SqlitePoolOptions, SqliteRow};
-use sqlx::Row;
+use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::postgres::PgPoolOptions;
+use tokio::io::BufReader;
 use tokio::sync::RwLock;
+use url::Url;
 use std::backtrace::Backtrace;
-use std::collections::BTreeMap;
 use std::fs;
 use std::sync::Arc;
 use tokio::net::TcpStream;
@@ -29,13 +28,12 @@ use tokio::sync::mpsc::{self, Sender};
 use tokio::time::sleep;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use futures_util::FutureExt;
-use sqlx::SqlitePool;
 
 mod shvnode;
 mod config;
 mod sql;
 
-use sql::{sql_exec, sql_select, DbPool};
+use sql::DbPool;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -52,18 +50,13 @@ struct Args {
     #[arg(short, long)]
     database: Option<String>,
 
-    /// Path where event qbe files can be found
-    #[arg(short, long)]
-    qbe_path: Option<String>,
-
     /// Print effective config
     #[arg(long)]
     print_config: bool,
 }
 
 struct State {
-    app_db: SqlitePool,
-    event_db_pools: BTreeMap<i64, DbPool>,
+    db: DbPool,
 }
 type SharedState = Arc<RwLock<State>>;
 
@@ -81,10 +74,10 @@ async fn main() -> anyhow::Result<()> {
     };
 
     if let Some(url) = args.url {
-        config.client.url = url;
+        config.client.url = Url::parse(&url)?;
     }
     if let Some(database) = args.database {
-        config.database = config::DbConfig { url: database, };
+        config.db.url = Url::parse(&database)?;
     }
 
     if args.print_config {
@@ -96,47 +89,66 @@ async fn main() -> anyhow::Result<()> {
     info!("==================================");
     info!("Starting application {}", env!("CARGO_PKG_NAME"));
     info!("==================================");
-    info!("Connecting to app database: {}", config.database.url);
-    let app_db = match SqlitePoolOptions::new().connect("sqlite::memory:").await {
-        Ok(db_pool) => {
-            info!("Connecting to app database: OK");
-            if let Err(e) = sqlx::migrate!("./db/migrations").run(&db_pool).await {
-                return Err(anyhow!("Database migration failed: {e}"));
-            }
-            info!("Database migration ... OK");
-            db_pool
-        }
-        Err(e) => {
-            return Err(anyhow!("Cannot connect to app database: {e}"));
-        }
+    info!("Connecting to app database: {}", config.db.url);
+    let db = if config.db.url.scheme() == "sqlite" {
+        DbPool::Sqlite(SqlitePoolOptions::new().connect(config.db.url.as_str()).await?)
+    } else {
+        DbPool::Postgres(PgPoolOptions::new().connect(config.db.url.as_str()).await?)
     };
 
-    let state = State {
-        app_db,
-        event_db_pools: BTreeMap::new(),
-    };
+    let state = State { db };
     let state: SharedState = Arc::new(RwLock::new(state));
 
-    let url = url::Url::parse(&config.client.url)?;
-    match broker_peer_loop_from_url(url, state).await {
+    match peer_loop_from_url(&config.client.url, state).await {
         Ok(()) => Ok(()),
         Err(e) => Err(anyhow!("Broker peer loop error: {e}")),
     }
 }
 
-async fn broker_peer_loop_from_url(url: url::Url, state: SharedState) -> anyhow::Result<()> {
-    let (host, port) = (url.host_str().unwrap_or_default(), url.port().unwrap_or(3755));
-    let address = format!("{}:{}", host, port);
-    // Establish a connection
-    info!("Connecting to broker TCP peer: {address}");
-    let stream = TcpStream::connect(&address).await?;
-    let (reader, writer) = stream.into_split();
-    let reader = tokio::io::BufReader::new(reader).compat();
-    let writer = writer.compat_write();
+type BoxedFrameReader = Box<dyn FrameReader + Unpin + Send>;
+type BoxedFrameWriter = Box<dyn FrameWriter + Unpin + Send>;
 
-    let peer_id = 1;
-    let frame_reader = StreamFrameReader::new(reader).with_peer_id(peer_id);
-    let frame_writer = StreamFrameWriter::new(writer).with_peer_id(peer_id);
+async fn login(url: &Url) -> anyhow::Result<(BoxedFrameReader, BoxedFrameWriter)> {
+    // Establish a connection
+    debug!("Connecting to: {url}");
+    let mut reset_session = false;
+    let (mut frame_reader, mut frame_writer) = match url.scheme() {
+        "tcp" => {
+            let address = format!(
+                "{}:{}",
+                url.host_str().unwrap_or("localhost"),
+                url.port().unwrap_or(3755)
+            );
+            let stream = TcpStream::connect(&address).await?;
+            let (reader, writer) = stream.split();
+            let brd = BufReader::new(reader);
+            let bwr = BufWriter::new(writer);
+            let frame_reader: BoxedFrameReader = Box::new(StreamFrameReader::new(brd));
+            let frame_writer: BoxedFrameWriter = Box::new(StreamFrameWriter::new(bwr));
+            (frame_reader, frame_writer)
+        }
+        s => {
+            panic!("Scheme {s} is not supported")
+        }
+    };
+
+    // login
+    let (user, password) = login_from_url(url);
+    let login_params = LoginParams {
+        user,
+        password,
+        ..Default::default()
+    };
+    client::login(&mut *frame_reader, &mut *frame_writer, &login_params, reset_session).await?;
+    debug!("Connected to broker.");
+    Ok((frame_reader, frame_writer))
+}
+
+async fn peer_loop_from_url(url: &url::Url, state: SharedState) -> anyhow::Result<()> {
+    // Establish a connection
+    info!("Connecting to broker TCP peer: {url}");
+    let (reader, writer) = login(url).await?;
+
     broker_peer_loop(url, frame_reader, frame_writer, state).await
 }
 
@@ -149,9 +161,9 @@ pub(crate) fn sqlx_to_anyhow(err: sqlx::Error) -> anyhow::Error {
     anyhow!("SQL error: {}", err)
 }
 
-async fn broker_peer_loop(url: url::Url, mut frame_reader: impl FrameReader + Send, mut frame_writer: impl FrameWriter + Send, state: SharedState) -> anyhow::Result<()> {
+async fn broker_peer_loop(url: &url::Url, mut frame_reader: impl FrameReader + Send, mut frame_writer: impl FrameWriter + Send, state: SharedState) -> anyhow::Result<()> {
     // login
-    let (user, password) = login_from_url(&url);
+    let (user, password) = login_from_url(url);
     let login_params = LoginParams {
         user,
         password,
@@ -264,66 +276,7 @@ async fn process_request(frame: RpcFrame, sender: Sender<RpcFrame>, state: Share
                 break 'result process_dir_ls(method, param, PUBLIC_DIR_LS_METHODS.iter(), [API_DIR].iter().copied());
             }
             if dir == API_DIR {
-                if let Some(dir) = dirs.next() && dir == EVENT_DIR {
-                    if let Some(event_id) = dirs.next() {
-                        if let Ok(event_id) = event_id.parse::<i64>() {
-                            if let Some(dir) = dirs.next() && dir == SQL_DIR {
-                                if dirs.next().is_none() {
-                                    let query = request.param().unwrap_or_default().as_list();
-                                    match method {
-                                        "exec" => break 'result sql_exec(&state, event_id, query).await,
-                                        "select" => break 'result sql_select(&state, event_id, query).await,
-                                        unknown_method => {
-                                            break 'result Err(anyhow!("Unknown method: {unknown_method}"))
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        match method {
-                            METH_GET => {
-                                let event_id = param.unwrap_or_default().as_i64();
-                                let db_pool = state.read().await.app_db.clone();
-                                let rec = sqlx::query_as::<_, sql::EventRecord>("SELECT * FROM events WHERE id=?")
-                                    .bind(event_id)
-                                    .fetch_one(&db_pool).await?;
-                                break 'result to_rpcvalue(&rec).map_err(|e| anyhow!(e))
-                            }
-                            METH_SET => {
-                                #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-                                struct SetValueParams (i64, sql::EventRecord);
-                                match from_rpcvalue::<SetValueParams>(param.unwrap_or_default()) {
-                                    Ok(SetValueParams(event_id, value)) => {
-                                        if event_id == 0 {
-                                            break 'result Err(anyhow!("Invalid event ID"));
-                                        }
-                                        let db_pool = state.read().await.app_db.clone();
-                                        break 'result sqlx::query("UPDATE events SET (api_token, owner) VALUES (?, ?) WHERE id=?")
-                                            .bind(value.api_token)
-                                            .bind(value.owner)
-                                            .bind(event_id)
-                                            .execute(&db_pool).await
-                                            .map(|_| RpcValue::null())
-                                            .map_err(sqlx_to_anyhow)
-                                    }
-                                    Err(e) => break 'result Err(anyhow!(e))
-                                };
-                            }
-                            _ => {
-                                let db_pool = state.read().await.app_db.clone();
-                                let ids = sqlx::query("SELECT id FROM events ORDER BY id")
-                                    .map(|row: SqliteRow| { row.get::<i64, _>(0).to_string() })
-                                    .fetch_all(&db_pool).await?;
-                                pub const META_METHOD_GET: MetaMethod = MetaMethod { name: METH_GET, flags: Flag::IsGetter as u32, access: AccessLevel::Read, param: "Any", result: "Any", signals: &[("recchng", Some("i(0,)"))], description: "" };
-                                pub const META_METHOD_SET: MetaMethod = MetaMethod { name: METH_SET, flags: Flag::IsSetter as u32, access: AccessLevel::Write, param: "Any", result: "n", signals: &[], description: "" };
-                                break 'result process_dir_ls(method, param, PUBLIC_DIR_LS_METHODS.iter().chain([META_METHOD_GET, META_METHOD_SET].iter()), ids.iter().map(|s| s.as_str()));
-                            }
-                        }
-                    }
-                } else {
-                    break 'result process_dir_ls(method, param, PUBLIC_DIR_LS_METHODS.iter(), [EVENT_DIR].iter().copied());
-                }
+                break 'result process_dir_ls(method, param, PUBLIC_DIR_LS_METHODS.iter(), [EVENT_DIR].iter().copied());
             }
         }
         Err(anyhow!("Invalid path: {shv_path:?}"))

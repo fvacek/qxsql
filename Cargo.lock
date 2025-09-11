@@ -1395,6 +1395,7 @@ dependencies = [
  "futures",
  "futures-util",
  "log",
+ "regex",
  "serde",
  "serde_json",
  "serde_yaml",

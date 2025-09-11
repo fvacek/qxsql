@@ -3,36 +3,24 @@ use shvproto::{List, Map, RpcValue};
 use sqlx::prelude::FromRow;
 use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
-use anyhow::anyhow;
-
-use crate::SharedState;
+use regex::Regex;
 
 pub enum DbPool {
     Postgres(PgPool),
     Sqlite(SqlitePool),
 }
 
-pub async fn sql_exec(state: &SharedState, event_id: i64, query: &Vec<RpcValue>) -> anyhow::Result<RpcValue> {
-    let state = state.read().await;
-    if let Some(db_pool) = state.event_db_pools.get(&event_id) {
-        match db_pool {
-            DbPool::Postgres(pool) => sql_exec_postgres(pool, query).await,
-            DbPool::Sqlite(pool) => sql_exec_sqlite(pool, query).await,
-        }
-    } else {
-        Err(anyhow!("Unknown event id: {event_id}"))
+pub async fn sql_exec(db: &DbPool, query: &Vec<RpcValue>) -> anyhow::Result<RpcValue> {
+    match db {
+        DbPool::Postgres(pool) => sql_exec_postgres(pool, query).await,
+        DbPool::Sqlite(pool) => sql_exec_sqlite(pool, query).await,
     }
 }
 
-pub async fn sql_select(state: &SharedState, event_id: i64, query: &Vec<RpcValue>) -> anyhow::Result<RpcValue> {
-    let state = state.read().await;
-    if let Some(db_pool) = state.event_db_pools.get(&event_id) {
-        match db_pool {
-            DbPool::Postgres(pool) => sql_select_postgres(pool, query).await,
-            DbPool::Sqlite(pool) => sql_select_sqlite(pool, query).await,
-        }
-    } else {
-        Err(anyhow!("Unknown event id: {event_id}"))
+pub async fn sql_select(db: &DbPool, query: &Vec<RpcValue>) -> anyhow::Result<RpcValue> {
+    match db {
+        DbPool::Postgres(pool) => sql_select_postgres(pool, query).await,
+        DbPool::Sqlite(pool) => sql_select_sqlite(pool, query).await,
     }
 }
 
@@ -41,7 +29,7 @@ pub async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &Vec<RpcValue>) -> a
     let mut params: Vec<RpcValue> = vec![];
     for (i, val) in query.iter().enumerate() {
         if i == 0 {
-            sql = val.as_str().to_string();
+            sql = convert_postgres_to_sqlite_params(val.as_str());
         } else {
             params.push(val.clone());
         }
@@ -95,7 +83,7 @@ pub async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &Vec<RpcValue>) ->
     let mut params: Vec<RpcValue> = vec![];
     for (i, val) in query.iter().enumerate() {
         if i == 0 {
-            sql = val.as_str().to_string();
+            sql = convert_postgres_to_sqlite_params(val.as_str());
         } else {
             params.push(val.clone());
         }
@@ -207,6 +195,11 @@ pub(crate) struct EventRecord {
     pub owner: String,
 }
 
+fn convert_postgres_to_sqlite_params(sql: &str) -> String {
+    let re = Regex::new(r"\$(\d+)").unwrap();
+    re.replace_all(sql, "?$1").to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,34 +212,21 @@ mod tests {
         let query = vec![
             "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)".into(),
         ];
-        let res = match &db_pool {
-            DbPool::Postgres(pool) => sql_exec_postgres(pool, &query).await,
-            DbPool::Sqlite(pool) => sql_exec_sqlite(pool, &query).await,
-        };
+        let res = sql_exec(&db_pool, &query).await;
         res.unwrap();
 
-        let insert_query = match &db_pool {
-            DbPool::Postgres(_) => "INSERT INTO users (id, name) VALUES ($1, $2)",
-            DbPool::Sqlite(_) => "INSERT INTO users (id, name) VALUES (?, ?)",
-        };
         let query = vec![
-            insert_query.into(),
+            "INSERT INTO users (id, name) VALUES ($1, $2)".into(),
             1.into(),
             "Jane Doe".into(),
         ];
-        let res = match &db_pool {
-            DbPool::Postgres(pool) => sql_exec_postgres(pool, &query).await,
-            DbPool::Sqlite(pool) => sql_exec_sqlite(pool, &query).await,
-        };
+        let res = sql_exec(&db_pool, &query).await;
         res.unwrap();
 
         let query = vec![
             "SELECT * FROM users".into(),
         ];
-        let result = match &db_pool {
-            DbPool::Postgres(pool) => sql_select_postgres(pool, &query).await,
-            DbPool::Sqlite(pool) => sql_select_sqlite(pool, &query).await,
-        };
+        let result = sql_select(&db_pool, &query).await;
         let expected: List = vec![
             vec![
                 ("id".to_string(), 1.into()),
@@ -257,7 +237,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sql_select() {
+    async fn test_sql_sqlite() {
         let db_pool = DbPool::Sqlite(SqlitePoolOptions::new()
             .connect("sqlite::memory:")
             .await
@@ -266,7 +246,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_postgres_sql_select() {
+    async fn test_sql_postgres() {
         if let Ok(db_url) = std::env::var("QXSQLD_POSTGRES_URL") {
             let db_pool = DbPool::Postgres(PgPoolOptions::new()
                 .connect(&db_url)
