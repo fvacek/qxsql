@@ -153,8 +153,7 @@ pub async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -
     let mut result: SelectResult = Default::default();
     for (ix, rowx) in rows.iter().enumerate() {
         let cols = rowx.columns();
-        let mut row: Vec<DbValue> = Default::default();
-        row.reserve(cols.len());
+        let mut row: Vec<DbValue> = Vec::with_capacity(cols.len());
         for (i, col) in cols.iter().enumerate() {
             let col_name = col.name();
             if ix == 0 {
@@ -185,8 +184,7 @@ pub(crate) async fn sql_select_postgres(db_pool: &Pool<Postgres>, query: &QueryA
     let mut result: SelectResult = Default::default();
     for (ix, rowx) in rows.iter().enumerate() {
         let cols = rowx.columns();
-        let mut row: Vec<DbValue> = Default::default();
-        row.reserve(cols.len());
+        let mut row: Vec<DbValue> = Vec::with_capacity(cols.len());
         for (i, col) in cols.iter().enumerate() {
             let col_name = col.name();
             if ix == 0 {

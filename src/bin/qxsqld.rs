@@ -153,9 +153,11 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
         return Ok(())
     }
 
-    let mut client_config = ClientConfig::default();
-    client_config.url = config.client.url.clone();
-    client_config.mount = config.client.mount.clone();
+    let client_config = ClientConfig {
+        url: config.client.url.clone(),
+        mount: config.client.mount.clone(),
+        ..Default::default()
+    };
 
     log::info!("=====================================================");
     log::info!("{} starting", std::module_path!());
