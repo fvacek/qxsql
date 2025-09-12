@@ -160,7 +160,7 @@ pub async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -
             if ix == 0 {
                 result.fields.push(DbField { name: col_name.to_string() });
             }
-            let val = db_value_from_sqlite_row(&rowx, i)?;
+            let val = db_value_from_sqlite_row(rowx, i)?;
             row.push(val);
         }
         result.rows.push(row);
@@ -192,7 +192,7 @@ pub(crate) async fn sql_select_postgres(db_pool: &Pool<Postgres>, query: &QueryA
             if ix == 0 {
                 result.fields.push(DbField { name: col_name.to_string() });
             }
-            let val = db_value_from_postgres_row(&rowx, i)?;
+            let val = db_value_from_postgres_row(rowx, i)?;
             row.push(val);
         }
         result.rows.push(row);

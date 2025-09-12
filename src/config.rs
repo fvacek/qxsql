@@ -3,17 +3,10 @@ use shvrpc::client::ClientConfig;
 use url::Url;
 
 #[derive(Debug, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct Config {
     pub client: ClientConfig,
     pub db: DbConfig,
-}
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            db: Default::default(),
-            client: Default::default(),
-        }
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
