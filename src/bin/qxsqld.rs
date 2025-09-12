@@ -6,12 +6,9 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tokio::sync::RwLock;
 
 use clap::Parser;
-use futures::{select, FutureExt, StreamExt};
 use log::*;
 use shvrpc::{client::ClientConfig, util::parse_log_verbosity};
-use shvrpc::RpcMessage;
-use shvclient::clientnode::SIG_CHNG;
-use shvclient::{ClientCommandSender, ClientEvent, ClientEventsReceiver, AppState};
+use shvclient::AppState;
 use simple_logger::SimpleLogger;
 use shvproto::{to_rpcvalue, FromRpcValue, RpcValue, ToRpcValue};
 use url::Url;
@@ -45,9 +42,6 @@ struct Opts {
     verbose: Option<String>,
 }
 
-// struct State {
-//     db: crate::sql::DbPool,
-// }
 type State = RwLock<qxsqld::sql::DbPool>;
 
 fn init_logger(cli_opts: &Opts) {
@@ -63,62 +57,6 @@ fn init_logger(cli_opts: &Opts) {
         }
     }
     logger.init().unwrap();
-}
-
-async fn emit_chng_task(
-    client_cmd_tx: ClientCommandSender<State>,
-    client_evt_rx: ClientEventsReceiver,
-    _app_state: AppState<State>,
-) -> shvrpc::Result<()> {
-    info!("signal task started");
-    let mut client_evt_rx = client_evt_rx.fuse();
-    let mut cnt = 0;
-    let mut emit_signal = true;
-    loop {
-        select! {
-            rx_event = client_evt_rx.next() => match rx_event {
-                Some(ClientEvent::ConnectionFailed(_)) => {
-                    info!("Connection failed");
-                }
-                Some(ClientEvent::Connected(_)) => {
-                    emit_signal = true;
-                    info!("Device connected");
-
-                    client_cmd_tx.mount_node("onfly", shvclient::fixed_node! {
-                        device_handler<State>(request, _tx ) {
-                            "echo" [IsGetter, Browse, "", ""] (param: RpcValue) => {
-                                println!("echo: {param}");
-                                Some(Ok(param))
-                            }
-                        }
-                    });
-                },
-                Some(ClientEvent::Disconnected) => {
-                    emit_signal = false;
-                    info!("Device disconnected");
-                },
-                None => break,
-            },
-            _ = tokio::time::sleep(std::time::Duration::from_secs(3)).fuse() => { }
-
-        }
-        if emit_signal {
-            let sig = RpcMessage::new_signal("status/delayed", SIG_CHNG, Some(cnt.into()));
-            client_cmd_tx.send_message(sig)?;
-            info!("signal task emits a value: {cnt}");
-            cnt += 1;
-        }
-        // let state = app_state.read().await;
-        // info!("state: {state}");
-        if cnt == 10 {
-            client_cmd_tx.unmount_node("onfly");
-        }
-        if cnt == 20 {
-            client_cmd_tx.terminate_client();
-        }
-    }
-    info!("signal task finished");
-    Ok(())
 }
 
 #[derive(Default, Clone, FromRpcValue, ToRpcValue)]
@@ -163,6 +101,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
     log::info!("{} starting", std::module_path!());
     log::info!("=====================================================");
 
+    // info!("Heart beat interval: {:?}", client_config.heartbeat_interval);
     info!("Connecting to app database: {}", config.db.url);
     let db = if config.db.url.scheme() == "sqlite" {
         qxsqld::sql::DbPool::Sqlite(SqlitePoolOptions::new().connect(config.db.url.as_str()).await?)
@@ -170,11 +109,11 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
         qxsqld::sql::DbPool::Postgres(PgPoolOptions::new().connect(config.db.url.as_str()).await?)
     };
 
-    let counter = AppState::new(RwLock::new(db));
-    let cnt = counter.clone();
+    let app_state = AppState::new(RwLock::new(db));
+    let cnt = app_state.clone();
 
-    let app_tasks = move |client_cmd_tx, client_evt_rx| {
-        tokio::task::spawn(emit_chng_task(client_cmd_tx, client_evt_rx, counter));
+    let app_tasks = move |_client_cmd_tx, _client_evt_rx| {
+        // tokio::task::spawn(emit_chng_task(client_cmd_tx, client_evt_rx, app_state));
     };
 
     let sql_node = shvclient::fixed_node!(
@@ -198,8 +137,8 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
     );
 
     shvclient::Client::new()
-        .app(DotAppNode::new("simple_device_tokio"))
-        .mount("status/delayed", sql_node)
+        .app(DotAppNode::new("qxsql"))
+        .mount("sql", sql_node)
         .with_app_state(cnt)
         .run_with_init(&client_config, app_tasks)
         // .run(&client_config)

@@ -245,27 +245,7 @@ pub(crate) struct EventRecord {
     pub owner: String,
 }
 
-pub fn fix_sql_params_colon_separator(input: &str, replacement: char) -> String {
-    let mut output = String::with_capacity(input.len());
-    let mut in_single_quotes = false;
-    for ch in input.chars() {
-        match ch {
-            '\'' => {
-                output.push(ch);
-                in_single_quotes = !in_single_quotes;
-            }
-            ':' if !in_single_quotes => {
-                output.push(replacement);
-            }
-            _ => {
-                output.push(ch);
-            }
-        }
-    }
-    output
-}
-
-pub fn postgres_query_positional_args_from_sqlite(input: &str) -> String {
+fn postgres_query_positional_args_from_sqlite(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let mut param_counter = 1;
     let mut in_single_quote = false;

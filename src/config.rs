@@ -17,7 +17,7 @@ pub struct DbConfig {
 impl Default for DbConfig {
     fn default() -> Self {
         Self {
-            url: Url::parse("sqlite:memory:").unwrap(),
+            url: Url::parse("sqlite::memory:").unwrap(),
         }
     }
 }
