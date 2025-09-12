@@ -28,8 +28,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # For local development
 # [patch."https://github.com/silicon-heaven/libshvproto-rs"]
 # shvproto = { path = "../shvrs/libshvproto-rs" }
-[patch."https://github.com/silicon-heaven/libshvclient-rs"]
-shvclient = { path = "../shvrs/libshvclient-rs" }
+# [patch."https://github.com/silicon-heaven/libshvclient-rs"]
+# shvclient = { path = "../shvrs/libshvclient-rs" }
 
 [patch.crates-io]
 simple_logger = { git = "https://github.com/fvacek/rust-simple_logger.git", branch = "main" }
