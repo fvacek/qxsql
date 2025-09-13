@@ -63,10 +63,35 @@ impl From<()> for DbValue {
     }
 }
 
+/// Query and parameters tuple struct.
+/// 
+/// Supports deserialization from JSON arrays:
+/// - `["SELECT * FROM users"]` - query only, params default to empty HashMap
+/// - `["SELECT * WHERE id = :id", {"id": 42}]` - query with parameters
+/// - `["SELECT * FROM table", {}]` - query with empty parameters object
 #[derive(Debug,Serialize,Deserialize)]
-pub struct QueryAndParams {
-    pub query: String,
-    pub params: HashMap<String, DbValue>,
+pub struct QueryAndParams(pub String, #[serde(default)] pub HashMap<String, DbValue>);
+
+impl QueryAndParams {
+    pub fn new(query: String, params: HashMap<String, DbValue>) -> Self {
+        QueryAndParams(query, params)
+    }
+
+    pub fn query(&self) -> &str {
+        &self.0
+    }
+
+    pub fn params(&self) -> &HashMap<String, DbValue> {
+        &self.1
+    }
+
+    pub fn query_mut(&mut self) -> &mut String {
+        &mut self.0
+    }
+
+    pub fn params_mut(&mut self) -> &mut HashMap<String, DbValue> {
+        &mut self.1
+    }
 }
 
 impl TryFrom<&RpcValue> for QueryAndParams {
@@ -106,7 +131,7 @@ pub async fn sql_select(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<S
 }
 
 fn prepare_sql_with_params(query: &QueryAndParams) -> String {
-    sql_replace::replace_params(&query.query, &query.params)
+    sql_replace::replace_params(query.query(), query.params())
 }
 
 pub async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
@@ -214,24 +239,24 @@ mod tests {
     use log::warn;
 
     async fn test_sql_select_with_db(db_pool: DbPool) {
-        let qp = QueryAndParams {
-            query: "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)".into(),
-            params: HashMap::new(),
-        };
+        let qp = QueryAndParams(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)".into(),
+            HashMap::new(),
+        );
         let res = sql_exec(&db_pool, &qp).await;
         res.unwrap();
 
-        let qp = QueryAndParams {
-            query: "INSERT INTO users (id, name) VALUES (:id, :name)".into(),
-            params: [("id".to_string(), 1.into()), ("name".to_string(), "Jane Doe".into())].into_iter().collect(),
-        };
+        let qp = QueryAndParams(
+            "INSERT INTO users (id, name) VALUES (:id, :name)".into(),
+            [("id".to_string(), 1.into()), ("name".to_string(), "Jane Doe".into())].into_iter().collect(),
+        );
         let res = sql_exec(&db_pool, &qp).await;
         res.unwrap();
 
-        let qp = QueryAndParams {
-            query: "SELECT * FROM users".into(),
-            params: HashMap::new(),
-        };
+        let qp = QueryAndParams(
+            "SELECT * FROM users".into(),
+            HashMap::new(),
+        );
         let result = sql_select(&db_pool, &qp).await;
         let expected = SelectResult {
             fields: vec![DbField { name: "id".to_string() }, DbField { name: "name".to_string() }],
@@ -258,10 +283,10 @@ mod tests {
                 .unwrap());
             let _ = match &db_pool {
                 DbPool::Postgres(pool) => {
-                    let qp = QueryAndParams {
-                        query: "DROP TABLE IF EXISTS users".into(),
-                        params: HashMap::new(),
-                    };
+                    let qp = QueryAndParams(
+                        "DROP TABLE IF EXISTS users".into(),
+                        HashMap::new(),
+                    );
                     sql_exec_postgres(pool, &qp).await
                 },
                 _ => panic!("not a postgres pool"),
@@ -271,5 +296,93 @@ mod tests {
             warn!(r#"export QXSQLD_POSTGRES_URL= "postgres://myuser:mypassword@localhost/mydb?options=--search_path%3Dmy_app_schema""#);
             warn!("Skipping postgres test, QXSQLD_POSTGRES_URL not set");
         }
+    }
+
+    #[test]
+    fn test_query_and_params_convenience_methods() {
+        let mut qp = QueryAndParams::new(
+            "SELECT * FROM users WHERE id = :id".to_string(),
+            [("id".to_string(), DbValue::Int(1))].into_iter().collect(),
+        );
+
+        // Test getter methods
+        assert_eq!(qp.query(), "SELECT * FROM users WHERE id = :id");
+        assert_eq!(qp.params().get("id"), Some(&DbValue::Int(1)));
+
+        // Test mutable methods
+        *qp.query_mut() = "SELECT * FROM posts WHERE id = :id".to_string();
+        qp.params_mut().insert("id".to_string(), DbValue::Int(2));
+
+        assert_eq!(qp.query(), "SELECT * FROM posts WHERE id = :id");
+        assert_eq!(qp.params().get("id"), Some(&DbValue::Int(2)));
+    }
+
+    #[test]
+    fn test_serde_default_params() {
+        // Test deserialization with missing params field (tuple with only first element)
+        let json = r#"["SELECT * FROM users"]"#;
+        let qp: QueryAndParams = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(qp.query(), "SELECT * FROM users");
+        assert!(qp.params().is_empty());
+        
+        // Test deserialization with params field present
+        let json = r#"["SELECT * FROM users WHERE id = :id", {"id": 42}]"#;
+        let qp: QueryAndParams = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(qp.query(), "SELECT * FROM users WHERE id = :id");
+        assert_eq!(qp.params().get("id"), Some(&DbValue::Int(42)));
+    }
+
+    #[test]
+    fn test_serde_serialization_roundtrip() {
+        // Test with empty params
+        let qp = QueryAndParams("SELECT * FROM users".to_string(), HashMap::new());
+        let json = serde_json::to_string(&qp).unwrap();
+        let deserialized: QueryAndParams = serde_json::from_str(&json).unwrap();
+        
+        assert_eq!(qp.query(), deserialized.query());
+        assert_eq!(qp.params(), deserialized.params());
+        
+        // Test with params
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), DbValue::Int(123));
+        params.insert("name".to_string(), DbValue::String("Alice".to_string()));
+        params.insert("active".to_string(), DbValue::Bool(true));
+        params.insert("deleted".to_string(), DbValue::Null);
+        
+        let qp = QueryAndParams("SELECT * FROM users WHERE id = :id AND name = :name".to_string(), params);
+        let json = serde_json::to_string(&qp).unwrap();
+        let deserialized: QueryAndParams = serde_json::from_str(&json).unwrap();
+        
+        assert_eq!(qp.query(), deserialized.query());
+        assert_eq!(qp.params().len(), deserialized.params().len());
+        assert_eq!(qp.params().get("id"), deserialized.params().get("id"));
+        assert_eq!(qp.params().get("name"), deserialized.params().get("name"));
+        assert_eq!(qp.params().get("active"), deserialized.params().get("active"));
+        assert_eq!(qp.params().get("deleted"), deserialized.params().get("deleted"));
+    }
+
+    #[test]
+    fn test_serde_different_json_formats() {
+        // Test that we can handle different JSON input formats
+        
+        // Array format with just query (uses default for params)
+        let json1 = r#"["SELECT * FROM table"]"#;
+        let qp1: QueryAndParams = serde_json::from_str(json1).unwrap();
+        assert_eq!(qp1.query(), "SELECT * FROM table");
+        assert!(qp1.params().is_empty());
+        
+        // Array format with both query and params
+        let json2 = r#"["SELECT * WHERE id = :id", {"id": 100}]"#;
+        let qp2: QueryAndParams = serde_json::from_str(json2).unwrap();
+        assert_eq!(qp2.query(), "SELECT * WHERE id = :id");
+        assert_eq!(qp2.params().get("id"), Some(&DbValue::Int(100)));
+        
+        // Array format with empty params object
+        let json3 = r#"["SELECT * FROM users", {}]"#;
+        let qp3: QueryAndParams = serde_json::from_str(json3).unwrap();
+        assert_eq!(qp3.query(), "SELECT * FROM users");
+        assert!(qp3.params().is_empty());
     }
 }
