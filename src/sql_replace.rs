@@ -83,6 +83,28 @@ where
     output
 }
 
+pub(crate) fn postgres_query_positional_args_from_sqlite(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut param_counter = 1;
+    let mut in_single_quote = false;
+
+    for c in input.chars() {
+        match c {
+            '\'' => {
+                output.push(c);
+                in_single_quote = !in_single_quote;
+            }
+            '?' if !in_single_quote => {
+                output.push('$');
+                output.push_str(&param_counter.to_string());
+                param_counter += 1;
+            }
+            _ => output.push(c),
+        }
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

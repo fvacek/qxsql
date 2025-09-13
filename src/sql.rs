@@ -10,7 +10,7 @@ use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
 use anyhow::anyhow;
 
-use crate::sql_replace;
+use crate::sql_replace::{self, postgres_query_positional_args_from_sqlite};
 
 pub enum DbPool {
     Postgres(PgPool),
@@ -110,7 +110,7 @@ impl TryFrom<&RpcValue> for QueryAndParams {
 pub struct QueryAndParamsList(
     pub String,
     #[serde(default)]
-    pub Vec<HashMap<String, DbValue>>
+    pub Vec<Vec<DbValue>>
 );
 impl TryFrom<&RpcValue> for QueryAndParamsList {
     type Error = String;
@@ -175,9 +175,18 @@ async fn sql_exec_postgres(db_pool: &Pool<Postgres>, query: &QueryAndParams) -> 
 
 async fn sql_exec_transaction_sqlite(db_pool: &Pool<Sqlite>, query_list: &QueryAndParamsList) -> anyhow::Result<()> {
     let mut tx = db_pool.begin().await?;
+    let sql = &query_list.0;
     for param in &query_list.1 {
-        let sql = sql_replace::replace_params(&query_list.0, param);
-        let q = sqlx::query(&sql);
+        let mut q = sqlx::query(sql);
+        for val in param {
+            match val {
+                DbValue::String(s) => q = q.bind(s),
+                DbValue::Int(i) => q = q.bind(i),
+                DbValue::Bool(b) => q = q.bind(b),
+                DbValue::DateTime(dt) => q = q.bind(dt.to_rfc3339()),
+                DbValue::Null => q = q.bind(None::<&str>),
+            }
+        };
         let _result = q.execute(&mut *tx).await?;
     }
     tx.commit().await?;
@@ -186,9 +195,18 @@ async fn sql_exec_transaction_sqlite(db_pool: &Pool<Sqlite>, query_list: &QueryA
 
 async fn sql_exec_transaction_postgres(db_pool: &Pool<Postgres>, query_list: &QueryAndParamsList) -> anyhow::Result<()> {
     let mut tx = db_pool.begin().await?;
+    let sql = postgres_query_positional_args_from_sqlite(&query_list.0);
     for param in &query_list.1 {
-        let sql = sql_replace::replace_params(&query_list.0, param);
-        let q = sqlx::query(&sql);
+        let mut q = sqlx::query(&sql);
+        for val in param {
+            match val {
+                DbValue::String(s) => q = q.bind(s),
+                DbValue::Int(i) => q = q.bind(i),
+                DbValue::Bool(b) => q = q.bind(b),
+                DbValue::DateTime(dt) => q = q.bind(dt.to_rfc3339()),
+                DbValue::Null => q = q.bind(None::<&str>),
+            }
+        };
         let _result = q.execute(&mut *tx).await?;
     }
     tx.commit().await?;
