@@ -1,4 +1,5 @@
 use std::backtrace::Backtrace;
+use std::collections::HashMap;
 
 use chrono::Utc;
 use log::error;
@@ -9,12 +10,14 @@ use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
 use anyhow::anyhow;
 
+use crate::sql_replace;
+
 pub enum DbPool {
     Postgres(PgPool),
     Sqlite(SqlitePool),
 }
 
-#[derive(Debug,Serialize,Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum DbValue {
     String(String),
@@ -63,7 +66,7 @@ impl From<()> for DbValue {
 #[derive(Debug,Serialize,Deserialize)]
 pub struct QueryAndParams {
     pub query: String,
-    pub params: Vec<DbValue>,
+    pub params: HashMap<String, DbValue>,
 }
 
 impl TryFrom<&RpcValue> for QueryAndParams {
@@ -103,63 +106,34 @@ pub async fn sql_select(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<S
 }
 
 pub async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
-    let sql = &query.query;
-    let mut q = sqlx::query(sql);
-    for val in &query.params {
-        match val {
-            DbValue::String(s) => q = q.bind(s),
-            DbValue::Int(i) => q = q.bind(i),
-            DbValue::Bool(b) => q = q.bind(b),
-            DbValue::DateTime(dt) => q = q.bind(dt.to_rfc3339()),
-            DbValue::Null => q = q.bind(None::<&str>),
-        }
-    };
-
+    let sql = sql_replace::replace_params(&query.query, &query.params);
+    let q = sqlx::query(&sql);
     let result = q.execute(db_pool).await?;
     Ok(ExecResult { rows_affected: result.rows_affected() as i64 })
 }
 
 pub async fn sql_exec_postgres(db_pool: &Pool<Postgres>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
-    let sql = postgres_query_positional_args_from_sqlite(&query.query);
-    let mut q = sqlx::query(&sql);
-    for val in &query.params {
-        match val {
-            DbValue::String(s) => q = q.bind(s),
-            DbValue::Int(i) => q = q.bind(i),
-            DbValue::Bool(b) => q = q.bind(b),
-            DbValue::DateTime(dt) => q = q.bind(dt.to_rfc3339()),
-            DbValue::Null => q = q.bind(None::<&str>),
-        }
-    };
-
+    let sql = sql_replace::replace_params(&query.query, &query.params);
+    let q = sqlx::query(&sql);
     let result = q.execute(db_pool).await?;
     Ok(ExecResult { rows_affected: result.rows_affected() as i64 })
 }
 
 pub async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyhow::Result<SelectResult> {
-    let sql = &query.query;
-    let mut q = sqlx::query(sql);
-    for val in &query.params {
-        match val {
-            DbValue::String(s) => q = q.bind(s),
-            DbValue::Int(i) => q = q.bind(i),
-            DbValue::Bool(b) => q = q.bind(b),
-            DbValue::DateTime(dt) => q = q.bind(dt.to_rfc3339()),
-            DbValue::Null => q = q.bind(None::<&str>),
-        }
-    };
-
+    let sql = sql_replace::replace_params(&query.query, &query.params);
+    let q = sqlx::query(&sql);
     let rows = q.fetch_all(db_pool).await?;
     let mut result: SelectResult = Default::default();
     for (ix, rowx) in rows.iter().enumerate() {
         let cols = rowx.columns();
-        let mut row: Vec<DbValue> = Vec::with_capacity(cols.len());
+        let mut row: Vec<DbValue> = Default::default();
+        row.reserve(cols.len());
         for (i, col) in cols.iter().enumerate() {
             let col_name = col.name();
             if ix == 0 {
                 result.fields.push(DbField { name: col_name.to_string() });
             }
-            let val = db_value_from_sqlite_row(rowx, i)?;
+            let val = db_value_from_sqlite_row(&rowx, i)?;
             row.push(val);
         }
         result.rows.push(row);
@@ -168,29 +142,20 @@ pub async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -
 }
 
 pub(crate) async fn sql_select_postgres(db_pool: &Pool<Postgres>, query: &QueryAndParams) -> anyhow::Result<SelectResult> {
-    let sql = postgres_query_positional_args_from_sqlite(&query.query);
-    let mut q = sqlx::query(&sql);
-    for val in &query.params {
-        match val {
-            DbValue::String(s) => q = q.bind(s),
-            DbValue::Int(i) => q = q.bind(i),
-            DbValue::Bool(b) => q = q.bind(b),
-            DbValue::DateTime(dt) => q = q.bind(dt.to_rfc3339()),
-            DbValue::Null => q = q.bind(None::<&str>),
-        }
-    };
-
+    let sql = sql_replace::replace_params(&query.query, &query.params);
+    let q = sqlx::query(&sql);
     let rows = q.fetch_all(db_pool).await?;
     let mut result: SelectResult = Default::default();
     for (ix, rowx) in rows.iter().enumerate() {
         let cols = rowx.columns();
-        let mut row: Vec<DbValue> = Vec::with_capacity(cols.len());
+        let mut row: Vec<DbValue> = Default::default();
+        row.reserve(cols.len());
         for (i, col) in cols.iter().enumerate() {
             let col_name = col.name();
             if ix == 0 {
                 result.fields.push(DbField { name: col_name.to_string() });
             }
-            let val = db_value_from_postgres_row(rowx, i)?;
+            let val = db_value_from_postgres_row(&rowx, i)?;
             row.push(val);
         }
         result.rows.push(row);
@@ -245,28 +210,6 @@ pub(crate) struct EventRecord {
     pub owner: String,
 }
 
-fn postgres_query_positional_args_from_sqlite(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    let mut param_counter = 1;
-    let mut in_single_quote = false;
-
-    for c in input.chars() {
-        match c {
-            '\'' => {
-                output.push(c);
-                in_single_quote = !in_single_quote;
-            }
-            '?' if !in_single_quote => {
-                output.push('$');
-                output.push_str(&param_counter.to_string());
-                param_counter += 1;
-            }
-            _ => output.push(c),
-        }
-    }
-    output
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,21 +220,21 @@ mod tests {
     async fn test_sql_select_with_db(db_pool: DbPool) {
         let qp = QueryAndParams {
             query: "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)".into(),
-            params: vec![],
+            params: HashMap::new(),
         };
         let res = sql_exec(&db_pool, &qp).await;
         res.unwrap();
 
         let qp = QueryAndParams {
-            query: "INSERT INTO users (id, name) VALUES ($1, $2)".into(),
-            params:vec![1.into(), "Jane Doe".into()],
+            query: "INSERT INTO users (id, name) VALUES (:id, :name)".into(),
+            params: [("id".to_string(), 1.into()), ("name".to_string(), "Jane Doe".into())].into_iter().collect(),
         };
         let res = sql_exec(&db_pool, &qp).await;
         res.unwrap();
 
         let qp = QueryAndParams {
             query: "SELECT * FROM users".into(),
-            params: vec![],
+            params: HashMap::new(),
         };
         let result = sql_select(&db_pool, &qp).await;
         let expected = SelectResult {
@@ -321,7 +264,7 @@ mod tests {
                 DbPool::Postgres(pool) => {
                     let qp = QueryAndParams {
                         query: "DROP TABLE IF EXISTS users".into(),
-                        params: vec![],
+                        params: HashMap::new(),
                     };
                     sql_exec_postgres(pool, &qp).await
                 },

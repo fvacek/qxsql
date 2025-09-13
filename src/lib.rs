@@ -6,6 +6,7 @@
 pub mod config;
 pub mod sql;
 pub mod shvnode;
+mod sql_replace;
 
 // pub use config::{Config, DbConfig};
 // pub use sql::{DbPool, sql_exec, sql_select};
