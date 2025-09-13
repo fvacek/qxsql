@@ -159,6 +159,23 @@ fn prepare_sql_with_params(query: &QueryAndParams) -> String {
     sql_replace::replace_params(query.query(), query.params())
 }
 
+// Helper macro to bind parameters to a query - eliminates duplication in transactions
+macro_rules! bind_db_values {
+    ($query:expr, $params:expr) => {{
+        let mut q = $query;
+        for val in $params {
+            q = match val {
+                DbValue::String(s) => q.bind(s),
+                DbValue::Int(i) => q.bind(i),
+                DbValue::Bool(b) => q.bind(b),
+                DbValue::DateTime(dt) => q.bind(dt.to_rfc3339()),
+                DbValue::Null => q.bind(None::<&str>),
+            };
+        }
+        q
+    }};
+}
+
 async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
     let sql = prepare_sql_with_params(query);
     let q = sqlx::query(&sql);
@@ -177,16 +194,8 @@ async fn sql_exec_transaction_sqlite(db_pool: &Pool<Sqlite>, query_list: &QueryA
     let mut tx = db_pool.begin().await?;
     let sql = &query_list.0;
     for param in &query_list.1 {
-        let mut q = sqlx::query(sql);
-        for val in param {
-            match val {
-                DbValue::String(s) => q = q.bind(s),
-                DbValue::Int(i) => q = q.bind(i),
-                DbValue::Bool(b) => q = q.bind(b),
-                DbValue::DateTime(dt) => q = q.bind(dt.to_rfc3339()),
-                DbValue::Null => q = q.bind(None::<&str>),
-            }
-        };
+        let q = sqlx::query(sql);
+        let q = bind_db_values!(q, param);
         let _result = q.execute(&mut *tx).await?;
     }
     tx.commit().await?;
@@ -197,16 +206,8 @@ async fn sql_exec_transaction_postgres(db_pool: &Pool<Postgres>, query_list: &Qu
     let mut tx = db_pool.begin().await?;
     let sql = postgres_query_positional_args_from_sqlite(&query_list.0);
     for param in &query_list.1 {
-        let mut q = sqlx::query(&sql);
-        for val in param {
-            match val {
-                DbValue::String(s) => q = q.bind(s),
-                DbValue::Int(i) => q = q.bind(i),
-                DbValue::Bool(b) => q = q.bind(b),
-                DbValue::DateTime(dt) => q = q.bind(dt.to_rfc3339()),
-                DbValue::Null => q = q.bind(None::<&str>),
-            }
-        };
+        let q = sqlx::query(&sql);
+        let q = bind_db_values!(q, param);
         let _result = q.execute(&mut *tx).await?;
     }
     tx.commit().await?;
@@ -254,39 +255,53 @@ fn sqlx_to_anyhow(err: Box<dyn std::error::Error + Send + Sync>) -> anyhow::Erro
     anyhow!("SQL error: {}", err)
 }
 
+// Helper function to determine if a type is text-based
+fn is_text_type(type_name: &str) -> bool {
+    type_name.contains("TEXT") || 
+    type_name.contains("STRING") || 
+    type_name.contains("VARCHAR")
+}
+
+
+
 fn db_value_from_sqlite_row(row: &SqliteRow, index: usize) -> anyhow::Result<DbValue> {
     let raw_val = row.try_get_raw(index)?;
     let type_name = raw_val.type_info().name().to_uppercase();
-    if raw_val.is_null() {
+    let is_null = raw_val.is_null();
+    
+    if is_null {
         return Ok(DbValue::Null);
     }
-    let val = if type_name.contains("TEXT") || type_name.contains("STRING") {
-        DbValue::String(<String as sqlx::decode::Decode<Sqlite>>::decode(raw_val).map_err(sqlx_to_anyhow)?)
+    
+    if is_text_type(&type_name) {
+        Ok(DbValue::String(<String as sqlx::decode::Decode<Sqlite>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
     } else if type_name.contains("INT") {
-        DbValue::Int(<i64 as sqlx::decode::Decode<Sqlite>>::decode(raw_val).map_err(sqlx_to_anyhow)?)
+        Ok(DbValue::Int(<i64 as sqlx::decode::Decode<Sqlite>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
     } else if type_name.contains("BOOL") {
-        DbValue::Bool(<bool as sqlx::decode::Decode<Sqlite>>::decode(raw_val).map_err(sqlx_to_anyhow)?)
+        Ok(DbValue::Bool(<bool as sqlx::decode::Decode<Sqlite>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
     } else {
         anyhow::bail!("Unsupported type: {}", type_name);
-    };
-    Ok(val)
+    }
 }
+
 fn db_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<DbValue> {
     let raw_val = row.try_get_raw(index)?;
     let type_name = raw_val.type_info().name().to_uppercase();
-    if raw_val.is_null() {
+    let is_null = raw_val.is_null();
+    
+    if is_null {
         return Ok(DbValue::Null);
     }
-    let val = if type_name.contains("TEXT") || type_name.contains("STRING") || type_name.contains("VARCHAR") {
-        DbValue::String(<String as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?)
+    
+    if is_text_type(&type_name) {
+        Ok(DbValue::String(<String as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
     } else if type_name.contains("INT") {
-        DbValue::Int(<i64 as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?)
+        Ok(DbValue::Int(<i64 as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
     } else if type_name.contains("BOOL") {
-        DbValue::Bool(<bool as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?)
+        Ok(DbValue::Bool(<bool as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
     } else {
         anyhow::bail!("Unsupported type: {}", type_name);
-    };
-    Ok(val)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, FromRow)]
