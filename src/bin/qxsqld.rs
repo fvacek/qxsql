@@ -1,4 +1,4 @@
-use qxsqld::sql::{sql_exec, sql_select, QueryAndParams};
+use qxsqld::sql::{sql_exec, sql_exec_transaction, sql_select, QueryAndParams, QueryAndParamsList};
 use shvclient::appnodes::DotAppNode;
 use shvrpc::rpcmessage::{RpcError, RpcErrorCode};
 use sqlx::postgres::PgPoolOptions;
@@ -135,6 +135,21 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                 tokio::task::spawn(async move {
                     let state = app_state.read().await;
                     let result = sql_exec(&state, &query).await;
+                    match result {
+                        Ok(result) => resp.set_result(to_rpcvalue(&result).expect("serde should work")),
+                        Err(e) => resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("SQL error: {}", e))),
+                    };
+                    if let Err(e) = client_cmd_tx.send_message(resp) {
+                        error!("sql_exec_handler: Cannot send response ({e})");
+                    }
+                });
+                None
+            }
+            "transaction" [None, Read, "[s:query,[{s|i|b|t|n}]:params]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParamsList) => {
+                let mut resp = request.prepare_response().unwrap_or_default();
+                tokio::task::spawn(async move {
+                    let state = app_state.read().await;
+                    let result = sql_exec_transaction(&state, &query).await;
                     match result {
                         Ok(result) => resp.set_result(to_rpcvalue(&result).expect("serde should work")),
                         Err(e) => resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("SQL error: {}", e))),

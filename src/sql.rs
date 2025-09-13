@@ -70,7 +70,11 @@ impl From<()> for DbValue {
 /// - `["SELECT * WHERE id = :id", {"id": 42}]` - query with parameters
 /// - `["SELECT * FROM table", {}]` - query with empty parameters object
 #[derive(Debug,Serialize,Deserialize)]
-pub struct QueryAndParams(pub String, #[serde(default)] pub HashMap<String, DbValue>);
+pub struct QueryAndParams(
+    pub String,
+    #[serde(default)]
+    pub HashMap<String, DbValue>
+);
 
 impl QueryAndParams {
     pub fn new(query: String, params: HashMap<String, DbValue>) -> Self {
@@ -102,6 +106,20 @@ impl TryFrom<&RpcValue> for QueryAndParams {
     }
 }
 
+#[derive(Debug,Serialize,Deserialize)]
+pub struct QueryAndParamsList(
+    pub String,
+    #[serde(default)]
+    pub Vec<HashMap<String, DbValue>>
+);
+impl TryFrom<&RpcValue> for QueryAndParamsList {
+    type Error = String;
+
+    fn try_from(value: &RpcValue) -> Result<Self, Self::Error> {
+        from_rpcvalue(value).map_err(|e| e.to_string())
+    }
+}
+
 #[derive(Debug,Serialize,Deserialize, Default)]
 pub struct ExecResult {
     pub rows_affected: i64,
@@ -116,6 +134,13 @@ pub struct DbField {
     pub name: String,
 }
 
+pub async fn sql_select(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<SelectResult> {
+    match db {
+        DbPool::Sqlite(pool) => sql_select_sqlite(pool, query).await,
+        DbPool::Postgres(pool) => sql_select_postgres(pool, query).await,
+    }
+}
+
 pub async fn sql_exec(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
     match db {
         DbPool::Sqlite(pool) => sql_exec_sqlite(pool, query).await,
@@ -123,10 +148,10 @@ pub async fn sql_exec(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<Exe
     }
 }
 
-pub async fn sql_select(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<SelectResult> {
+pub async fn sql_exec_transaction(db: &DbPool, query: &QueryAndParamsList) -> anyhow::Result<()> {
     match db {
-        DbPool::Sqlite(pool) => sql_select_sqlite(pool, query).await,
-        DbPool::Postgres(pool) => sql_select_postgres(pool, query).await,
+        DbPool::Sqlite(pool) => sql_exec_transaction_sqlite(pool, query).await,
+        DbPool::Postgres(pool) => sql_exec_transaction_postgres(pool, query).await,
     }
 }
 
@@ -146,6 +171,28 @@ async fn sql_exec_postgres(db_pool: &Pool<Postgres>, query: &QueryAndParams) -> 
     let q = sqlx::query(&sql);
     let result = q.execute(db_pool).await?;
     Ok(ExecResult { rows_affected: result.rows_affected() as i64 })
+}
+
+async fn sql_exec_transaction_sqlite(db_pool: &Pool<Sqlite>, query_list: &QueryAndParamsList) -> anyhow::Result<()> {
+    let mut tx = db_pool.begin().await?;
+    for param in &query_list.1 {
+        let sql = sql_replace::replace_params(&query_list.0, param);
+        let q = sqlx::query(&sql);
+        let _result = q.execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn sql_exec_transaction_postgres(db_pool: &Pool<Postgres>, query_list: &QueryAndParamsList) -> anyhow::Result<()> {
+    let mut tx = db_pool.begin().await?;
+    for param in &query_list.1 {
+        let sql = sql_replace::replace_params(&query_list.0, param);
+        let q = sqlx::query(&sql);
+        let _result = q.execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 fn process_rows<R>(rows: &[R], value_extractor: impl Fn(&R, usize) -> anyhow::Result<DbValue>) -> anyhow::Result<SelectResult>
