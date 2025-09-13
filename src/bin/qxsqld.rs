@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 
 use clap::Parser;
 use log::*;
-use shvrpc::{client::ClientConfig, util::parse_log_verbosity};
+use shvrpc::util::parse_log_verbosity;
 use shvclient::AppState;
 use simple_logger::SimpleLogger;
 use shvproto::{to_rpcvalue, FromRpcValue, RpcValue, ToRpcValue};
@@ -84,18 +84,15 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
     if let Some(database) = cli_opts.database {
         config.db.url = Url::parse(&database)?;
     }
+    if let Some(mount) = cli_opts.mount {
+        config.client.mount = Some(mount);
+    }
 
     if cli_opts.print_config {
         let yaml = serde_yaml::to_string(&config)?;
         println!("{}", yaml);
         return Ok(())
     }
-
-    let client_config = ClientConfig {
-        url: config.client.url.clone(),
-        mount: config.client.mount.clone(),
-        ..Default::default()
-    };
 
     log::info!("=====================================================");
     log::info!("{} starting", std::module_path!());
@@ -112,9 +109,9 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
     let app_state = AppState::new(RwLock::new(db));
     let cnt = app_state.clone();
 
-    let app_tasks = move |_client_cmd_tx, _client_evt_rx| {
-        // tokio::task::spawn(emit_chng_task(client_cmd_tx, client_evt_rx, app_state));
-    };
+    // let app_tasks = move |_client_cmd_tx, _client_evt_rx| {
+    //     tokio::task::spawn(emit_chng_task(client_cmd_tx, client_evt_rx, app_state));
+    // };
 
     let sql_node = shvclient::fixed_node!(
         sql_select_handler<State>(request, client_cmd_tx, app_state) {
@@ -140,7 +137,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
         .app(DotAppNode::new("qxsql"))
         .mount("sql", sql_node)
         .with_app_state(cnt)
-        .run_with_init(&client_config, app_tasks)
-        // .run(&client_config)
+        // .run_with_init(&client_config, app_tasks)
+        .run(&config.client)
         .await
 }
