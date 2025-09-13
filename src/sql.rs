@@ -105,24 +105,28 @@ pub async fn sql_select(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<S
     }
 }
 
+fn prepare_sql_with_params(query: &QueryAndParams) -> String {
+    sql_replace::replace_params(&query.query, &query.params)
+}
+
 pub async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
-    let sql = sql_replace::replace_params(&query.query, &query.params);
+    let sql = prepare_sql_with_params(query);
     let q = sqlx::query(&sql);
     let result = q.execute(db_pool).await?;
     Ok(ExecResult { rows_affected: result.rows_affected() as i64 })
 }
 
 pub async fn sql_exec_postgres(db_pool: &Pool<Postgres>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
-    let sql = sql_replace::replace_params(&query.query, &query.params);
+    let sql = prepare_sql_with_params(query);
     let q = sqlx::query(&sql);
     let result = q.execute(db_pool).await?;
     Ok(ExecResult { rows_affected: result.rows_affected() as i64 })
 }
 
-pub async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyhow::Result<SelectResult> {
-    let sql = sql_replace::replace_params(&query.query, &query.params);
-    let q = sqlx::query(&sql);
-    let rows = q.fetch_all(db_pool).await?;
+fn process_rows<R>(rows: &[R], value_extractor: impl Fn(&R, usize) -> anyhow::Result<DbValue>) -> anyhow::Result<SelectResult>
+where
+    R: Row,
+{
     let mut result: SelectResult = Default::default();
     for (ix, rowx) in rows.iter().enumerate() {
         let cols = rowx.columns();
@@ -133,7 +137,7 @@ pub async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -
             if ix == 0 {
                 result.fields.push(DbField { name: col_name.to_string() });
             }
-            let val = db_value_from_sqlite_row(&rowx, i)?;
+            let val = value_extractor(rowx, i)?;
             row.push(val);
         }
         result.rows.push(row);
@@ -141,26 +145,18 @@ pub async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -
     Ok(result)
 }
 
-pub(crate) async fn sql_select_postgres(db_pool: &Pool<Postgres>, query: &QueryAndParams) -> anyhow::Result<SelectResult> {
-    let sql = sql_replace::replace_params(&query.query, &query.params);
+pub async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyhow::Result<SelectResult> {
+    let sql = prepare_sql_with_params(query);
     let q = sqlx::query(&sql);
     let rows = q.fetch_all(db_pool).await?;
-    let mut result: SelectResult = Default::default();
-    for (ix, rowx) in rows.iter().enumerate() {
-        let cols = rowx.columns();
-        let mut row: Vec<DbValue> = Default::default();
-        row.reserve(cols.len());
-        for (i, col) in cols.iter().enumerate() {
-            let col_name = col.name();
-            if ix == 0 {
-                result.fields.push(DbField { name: col_name.to_string() });
-            }
-            let val = db_value_from_postgres_row(&rowx, i)?;
-            row.push(val);
-        }
-        result.rows.push(row);
-    }
-    Ok(result)
+    process_rows(&rows, db_value_from_sqlite_row)
+}
+
+pub(crate) async fn sql_select_postgres(db_pool: &Pool<Postgres>, query: &QueryAndParams) -> anyhow::Result<SelectResult> {
+    let sql = prepare_sql_with_params(query);
+    let q = sqlx::query(&sql);
+    let rows = q.fetch_all(db_pool).await?;
+    process_rows(&rows, db_value_from_postgres_row)
 }
 
 fn sqlx_to_anyhow(err: Box<dyn std::error::Error + Send + Sync>) -> anyhow::Error {
