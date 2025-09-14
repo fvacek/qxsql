@@ -257,8 +257,8 @@ fn sqlx_to_anyhow(err: Box<dyn std::error::Error + Send + Sync>) -> anyhow::Erro
 
 // Helper function to determine if a type is text-based
 fn is_text_type(type_name: &str) -> bool {
-    type_name.contains("TEXT") || 
-    type_name.contains("STRING") || 
+    type_name.contains("TEXT") ||
+    type_name.contains("STRING") ||
     type_name.contains("VARCHAR")
 }
 
@@ -268,11 +268,11 @@ fn db_value_from_sqlite_row(row: &SqliteRow, index: usize) -> anyhow::Result<DbV
     let raw_val = row.try_get_raw(index)?;
     let type_name = raw_val.type_info().name().to_uppercase();
     let is_null = raw_val.is_null();
-    
+
     if is_null {
         return Ok(DbValue::Null);
     }
-    
+
     if is_text_type(&type_name) {
         Ok(DbValue::String(<String as sqlx::decode::Decode<Sqlite>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
     } else if type_name.contains("INT") {
@@ -288,11 +288,11 @@ fn db_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<DbVal
     let raw_val = row.try_get_raw(index)?;
     let type_name = raw_val.type_info().name().to_uppercase();
     let is_null = raw_val.is_null();
-    
+
     if is_null {
         return Ok(DbValue::Null);
     }
-    
+
     if is_text_type(&type_name) {
         Ok(DbValue::String(<String as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
     } else if type_name.contains("INT") {
@@ -465,4 +465,159 @@ mod tests {
         assert_eq!(qp3.query(), "SELECT * FROM users");
         assert!(qp3.params().is_empty());
     }
+
+    async fn test_sql_exec_transaction_with_db(db_pool: DbPool) {
+        // Create test table
+        let create_table = QueryAndParams(
+            "CREATE TABLE test_users (id INTEGER, name TEXT, active BOOL)".into(),
+            HashMap::new(),
+        );
+        sql_exec(&db_pool, &create_table).await.unwrap();
+
+        // Test successful transaction with multiple inserts
+        let transaction_query = QueryAndParamsList(
+            "INSERT INTO test_users (id, name, active) VALUES (?, ?, ?)".into(),
+            vec![
+                vec![DbValue::Int(1), DbValue::String("Alice".into()), DbValue::Bool(true)],
+                vec![DbValue::Int(2), DbValue::String("Bob".into()), DbValue::Bool(false)],
+                vec![DbValue::Int(3), DbValue::String("Charlie".into()), DbValue::Bool(true)],
+            ],
+        );
+
+        let result = sql_exec_transaction(&db_pool, &transaction_query).await;
+        assert!(result.is_ok(), "Transaction should succeed: {:?}", result);
+
+        // Verify all rows were inserted
+        let select_query = QueryAndParams(
+            "SELECT COUNT(*) as count FROM test_users".into(),
+            HashMap::new(),
+        );
+        let count_result = sql_select(&db_pool, &select_query).await.unwrap();
+        assert_eq!(count_result.rows.len(), 1);
+        assert_eq!(count_result.rows[0][0], DbValue::Int(3));
+
+        // Test transaction with mixed data types including NULL
+        let mixed_transaction = QueryAndParamsList(
+            "INSERT INTO test_users (id, name, active) VALUES (?, ?, ?)".into(),
+            vec![
+                vec![DbValue::Int(4), DbValue::String("David".into()), DbValue::Null],
+                vec![DbValue::Int(5), DbValue::Null, DbValue::Bool(true)],
+            ],
+        );
+
+        let result = sql_exec_transaction(&db_pool, &mixed_transaction).await;
+        assert!(result.is_ok(), "Mixed type transaction should succeed: {:?}", result);
+
+        // Verify the new rows
+        let final_count = sql_select(&db_pool, &select_query).await.unwrap();
+        assert_eq!(final_count.rows[0][0], DbValue::Int(5));
+    }
+
+    async fn test_sql_exec_transaction_rollback_with_db(db_pool: DbPool) {
+        // Create test table
+        let create_table = QueryAndParams(
+            "CREATE TABLE rollback_test (id INTEGER UNIQUE, name TEXT)".into(),
+            HashMap::new(),
+        );
+        sql_exec(&db_pool, &create_table).await.unwrap();
+
+        // Insert initial data
+        let initial_insert = QueryAndParams(
+            "INSERT INTO rollback_test (id, name) VALUES (:id, :name)".into(),
+            [("id".to_string(), DbValue::Int(1)), ("name".to_string(), DbValue::String("Initial".into()))]
+                .into_iter().collect(),
+        );
+        sql_exec(&db_pool, &initial_insert).await.unwrap();
+
+        // Test transaction that should fail due to unique constraint violation
+        let failing_transaction = QueryAndParamsList(
+            "INSERT INTO rollback_test (id, name) VALUES (?, ?)".into(),
+            vec![
+                vec![DbValue::Int(2), DbValue::String("Valid".into())],
+                vec![DbValue::Int(1), DbValue::String("Duplicate".into())], // This should fail
+                vec![DbValue::Int(3), DbValue::String("Never inserted".into())],
+            ],
+        );
+
+        let result = sql_exec_transaction(&db_pool, &failing_transaction).await;
+        assert!(result.is_err(), "Transaction with duplicate key should fail");
+
+        // Verify rollback - only the initial row should exist
+        let count_query = QueryAndParams(
+            "SELECT COUNT(*) as count FROM rollback_test".into(),
+            HashMap::new(),
+        );
+        let count_result = sql_select(&db_pool, &count_query).await.unwrap();
+        assert_eq!(count_result.rows[0][0], DbValue::Int(1), "Transaction should be rolled back");
+
+        // Verify the content is still the initial data
+        let select_all = QueryAndParams(
+            "SELECT id, name FROM rollback_test".into(),
+            HashMap::new(),
+        );
+        let all_data = sql_select(&db_pool, &select_all).await.unwrap();
+        assert_eq!(all_data.rows.len(), 1);
+        assert_eq!(all_data.rows[0][0], DbValue::Int(1));
+        assert_eq!(all_data.rows[0][1], DbValue::String("Initial".into()));
+    }
+
+    #[tokio::test]
+    async fn test_sql_exec_transaction_sqlite() {
+        // Test successful transaction
+        let db_pool = DbPool::Sqlite(SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap());
+
+        test_sql_exec_transaction_with_db(db_pool).await;
+
+        // Test rollback behavior with a new connection
+        let db_pool2 = DbPool::Sqlite(SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap());
+
+        test_sql_exec_transaction_rollback_with_db(db_pool2).await;
+    }
+
+    #[tokio::test]
+    async fn test_sql_exec_transaction_postgres() {
+        if let Ok(db_url) = std::env::var("QXSQLD_POSTGRES_URL") {
+            // Test successful transaction
+            let db_pool = DbPool::Postgres(PgPoolOptions::new()
+                .connect(&db_url)
+                .await
+                .unwrap());
+
+            // Clean up any existing test tables
+            let _ = match &db_pool {
+                DbPool::Postgres(pool) => {
+                    let drop1 = QueryAndParams("DROP TABLE IF EXISTS test_users".into(), HashMap::new());
+                    sql_exec_postgres(pool, &drop1).await.ok();
+                },
+                _ => panic!("not a postgres pool"),
+            };
+
+            test_sql_exec_transaction_with_db(db_pool).await;
+
+            // Test rollback behavior with a new connection
+            let db_pool2 = DbPool::Postgres(PgPoolOptions::new()
+                .connect(&db_url)
+                .await
+                .unwrap());
+
+            let _ = match &db_pool2 {
+                DbPool::Postgres(pool) => {
+                    let drop2 = QueryAndParams("DROP TABLE IF EXISTS rollback_test".into(), HashMap::new());
+                    sql_exec_postgres(pool, &drop2).await.ok();
+                },
+                _ => panic!("not a postgres pool"),
+            };
+
+            test_sql_exec_transaction_rollback_with_db(db_pool2).await;
+        } else {
+            warn!("Skipping postgres transaction test, QXSQLD_POSTGRES_URL not set");
+        }
+    }
+
 }
