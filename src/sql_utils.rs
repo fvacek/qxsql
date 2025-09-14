@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
+
 use crate::sql::DbValue;
 
 /// Trait for types that can provide parameter lookups
@@ -103,6 +105,13 @@ pub(crate) fn postgres_query_positional_args_from_sqlite(input: &str) -> String 
         }
     }
     output
+}
+
+
+pub(crate) fn parse_rfc3339_datetime(s: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
 }
 
 #[cfg(test)]

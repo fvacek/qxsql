@@ -10,7 +10,7 @@ use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
 use anyhow::anyhow;
 
-use crate::sql_replace::{self, postgres_query_positional_args_from_sqlite};
+use crate::sql_utils::{self, parse_rfc3339_datetime, postgres_query_positional_args_from_sqlite};
 
 pub enum DbPool {
     Postgres(PgPool),
@@ -156,7 +156,7 @@ pub async fn sql_exec_transaction(db: &DbPool, query: &QueryAndParamsList) -> an
 }
 
 fn prepare_sql_with_params(query: &QueryAndParams) -> String {
-    sql_replace::replace_params(query.query(), query.params())
+    sql_utils::replace_params(query.query(), query.params())
 }
 
 // Helper macro to bind parameters to a query - eliminates duplication in transactions
@@ -262,8 +262,6 @@ fn is_text_type(type_name: &str) -> bool {
     type_name.contains("VARCHAR")
 }
 
-
-
 fn db_value_from_sqlite_row(row: &SqliteRow, index: usize) -> anyhow::Result<DbValue> {
     let raw_val = row.try_get_raw(index)?;
     let type_name = raw_val.type_info().name().to_uppercase();
@@ -274,7 +272,12 @@ fn db_value_from_sqlite_row(row: &SqliteRow, index: usize) -> anyhow::Result<DbV
     }
 
     if is_text_type(&type_name) {
-        Ok(DbValue::String(<String as sqlx::decode::Decode<Sqlite>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
+        let s = <String as sqlx::decode::Decode<Sqlite>>::decode(raw_val).map_err(sqlx_to_anyhow)?;
+        if s.len() > 18 && s.as_bytes()[10] == b'T' && let Some(dt) = parse_rfc3339_datetime(&s) {
+            Ok(DbValue::DateTime(dt))
+        } else {
+            Ok(DbValue::String(s))
+        }
     } else if type_name.contains("INT") {
         Ok(DbValue::Int(<i64 as sqlx::decode::Decode<Sqlite>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
     } else if type_name.contains("BOOL") {
@@ -294,7 +297,13 @@ fn db_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<DbVal
     }
 
     if is_text_type(&type_name) {
-        Ok(DbValue::String(<String as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
+        let s = <String as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?;
+        // 2025-09-12T15:04:05Z
+        if s.len() > 18 && s.as_bytes()[10] == b'T' && let Some(dt) = parse_rfc3339_datetime(&s) {
+            Ok(DbValue::DateTime(dt))
+        } else {
+            Ok(DbValue::String(s))
+        }
     } else if type_name.contains("INT") {
         Ok(DbValue::Int(<i64 as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
     } else if type_name.contains("BOOL") {
@@ -320,16 +329,16 @@ mod tests {
 
     async fn test_sql_select_with_db(db_pool: DbPool) {
         let qp = QueryAndParams(
-            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)".into(),
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, created TEXT)".into(),
             HashMap::new(),
         );
         let res = sql_exec(&db_pool, &qp).await;
         res.unwrap();
 
+        let dt = DbValue::DateTime(parse_rfc3339_datetime("2025-09-12T15:04:05Z").unwrap());
         let qp = QueryAndParams(
-            "INSERT INTO users (id, name) VALUES (:id, :name)".into(),
-            [("id".to_string(), 1.into()), ("name".to_string(), "Jane Doe".into())].into_iter().collect(),
-        );
+            "INSERT INTO users (id, name, created) VALUES (:id, :name, :created)".into(),
+            [ ("id".to_string(), 1.into()), ("name".to_string(), "Jane Doe".into()), ("created".to_string(), dt.clone()), ].into_iter().collect(), );
         let res = sql_exec(&db_pool, &qp).await;
         res.unwrap();
 
@@ -339,8 +348,8 @@ mod tests {
         );
         let result = sql_select(&db_pool, &qp).await;
         let expected = SelectResult {
-            fields: vec![DbField { name: "id".to_string() }, DbField { name: "name".to_string() }],
-            rows: vec![vec![1.into(), "Jane Doe".into()]],
+            fields: vec![DbField { name: "id".to_string() }, DbField { name: "name".to_string() }, DbField { name: "created".to_string() }],
+            rows: vec![vec![1.into(), "Jane Doe".into(), dt]],
         };
         assert_eq!(result.unwrap(), expected);
     }
