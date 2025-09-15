@@ -207,34 +207,29 @@ fn parse_sql_info_if_needed(query: &QueryAndParams) -> Option<SqlInfo> {
     }
 }
 
+macro_rules! sql_exec_impl {
+    ($db_pool:expr, $query:expr) => {{
+        let sql = prepare_sql_with_params($query);
+        let info = parse_sql_info_if_needed($query);
+        
+        if let Some(info) = info && info.is_returning_id {
+            let insert_id: i64 = sqlx::query_scalar(&sql)
+                .fetch_one($db_pool).await.map_err(sqlx2_to_anyhow)?;
+            Ok(ExecResult { rows_affected: 1, insert_id, info: Some(info) })
+        } else {
+            let q = sqlx::query(&sql);
+            let result = q.execute($db_pool).await?;
+            Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: 0, info: None })
+        }
+    }};
+}
+
 async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
-    let sql = prepare_sql_with_params(query);
-    let info = parse_sql_info_if_needed(query);
-    
-    if let Some(info) = info && info.is_returning_id {
-        let insert_id: i64 = sqlx::query_scalar(&sql)
-            .fetch_one(db_pool).await.map_err(sqlx2_to_anyhow)?;
-        Ok(ExecResult { rows_affected: 1, insert_id, info: Some(info) })
-    } else {
-        let q = sqlx::query(&sql);
-        let result = q.execute(db_pool).await?;
-        Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: 0, info: None })
-    }
+    sql_exec_impl!(db_pool, query)
 }
 
 async fn sql_exec_postgres(db_pool: &Pool<Postgres>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
-    let sql = prepare_sql_with_params(query);
-    let info = parse_sql_info_if_needed(query);
-    
-    if let Some(info) = info && info.is_returning_id {
-        let insert_id: i64 = sqlx::query_scalar(&sql)
-            .fetch_one(db_pool).await.map_err(sqlx2_to_anyhow)?;
-        Ok(ExecResult { rows_affected: 1, insert_id, info: Some(info) })
-    } else {
-        let q = sqlx::query(&sql);
-        let result = q.execute(db_pool).await?;
-        Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: 0, info: None })
-    }
+    sql_exec_impl!(db_pool, query)
 }
 
 async fn sql_exec_transaction_sqlite(db_pool: &Pool<Sqlite>, query_list: &QueryAndParamsList) -> anyhow::Result<()> {
