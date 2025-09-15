@@ -192,21 +192,25 @@ macro_rules! bind_db_values {
     }};
 }
 
-async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
-    let sql = prepare_sql_with_params(query);
-    let info = 'aaa: {
-        if query.issuer().is_some() {
-            match crate::sql_utils::parse_sql_info(&query.query()) {
-                Ok(sql_info) => {
-                    break 'aaa Some(sql_info);
-                }
-                Err(e) => {
-                    error!("sql_exec: parse SQL query error: {}", e);
-                }
+// Common logic for SQL execution
+fn parse_sql_info_if_needed(query: &QueryAndParams) -> Option<SqlInfo> {
+    if query.issuer().is_some() {
+        match crate::sql_utils::parse_sql_info(&query.query()) {
+            Ok(sql_info) => Some(sql_info),
+            Err(e) => {
+                error!("sql_exec: parse SQL query error: {}", e);
+                None
             }
         }
+    } else {
         None
-    };
+    }
+}
+
+async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
+    let sql = prepare_sql_with_params(query);
+    let info = parse_sql_info_if_needed(query);
+    
     if let Some(info) = info && info.is_returning_id {
         let insert_id: i64 = sqlx::query_scalar(&sql)
             .fetch_one(db_pool).await.map_err(sqlx2_to_anyhow)?;
@@ -220,19 +224,8 @@ async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyh
 
 async fn sql_exec_postgres(db_pool: &Pool<Postgres>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
     let sql = prepare_sql_with_params(query);
-    let info = 'aaa: {
-        if query.issuer().is_some() {
-            match crate::sql_utils::parse_sql_info(&query.query()) {
-                Ok(sql_info) => {
-                    break 'aaa Some(sql_info);
-                }
-                Err(e) => {
-                    error!("sql_exec: parse SQL query error: {}", e);
-                }
-            }
-        }
-        None
-    };
+    let info = parse_sql_info_if_needed(query);
+    
     if let Some(info) = info && info.is_returning_id {
         let insert_id: i64 = sqlx::query_scalar(&sql)
             .fetch_one(db_pool).await.map_err(sqlx2_to_anyhow)?;
