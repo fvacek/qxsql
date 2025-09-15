@@ -118,6 +118,7 @@ pub(crate) fn parse_rfc3339_datetime(s: &str) -> Option<DateTime<Utc>> {
 pub enum SqlOperation {
     Insert,
     Update,
+    Delete,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -125,11 +126,6 @@ pub struct SqlInfo {
     pub operation: SqlOperation,
     pub table_name: String,
     pub is_returning_id: bool,
-}
-impl SqlInfo {
-    pub fn is_insert(&self) -> bool {
-        self.operation == SqlOperation::Insert
-    }
 }
 
 pub fn parse_sql_info(sql: &str) -> Result<SqlInfo, String> {
@@ -148,6 +144,7 @@ pub fn parse_sql_info(sql: &str) -> Result<SqlInfo, String> {
     let operation = match operation_str.as_str() {
         "INSERT" => SqlOperation::Insert,
         "UPDATE" => SqlOperation::Update,
+        "DELETE" => SqlOperation::Delete,
         _ => return Err(format!("Unsupported SQL operation: {}", parts[0])),
     };
 
@@ -159,6 +156,16 @@ pub fn parse_sql_info(sql: &str) -> Result<SqlInfo, String> {
             }
             if parts[1].to_uppercase() != "INTO" {
                 return Err("Invalid INSERT statement: expected 'INTO' keyword".to_string());
+            }
+            parts[2].to_string()
+        },
+        SqlOperation::Delete => {
+            // For DELETE: "DELETE FROM table_name ..."
+            if parts.len() < 3 {
+                return Err("Invalid DELETE statement: missing table name".to_string());
+            }
+            if parts[1].to_uppercase() != "FROM" {
+                return Err("Invalid DELETE statement: expected 'FROM' keyword".to_string());
             }
             parts[2].to_string()
         },
@@ -188,6 +195,7 @@ pub fn parse_sql_info(sql: &str) -> Result<SqlInfo, String> {
                 && tokens[tokens.len() - 2] == "RETURNING"
                 && tokens[tokens.len() - 1] == "ID"
         },
+        SqlOperation::Delete => false, // DELETE doesn't support RETURNING id in this context
         SqlOperation::Update => false, // UPDATE doesn't support RETURNING id in this context
     };
 

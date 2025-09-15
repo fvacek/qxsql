@@ -1,4 +1,4 @@
-use qxsqld::sql::{sql_exec, sql_exec_transaction, sql_select, DbValue, QueryAndParams, QueryAndParamsList, RecChng};
+use qxsqld::{sql::{sql_exec, sql_exec_transaction, sql_select, DbValue, QueryAndParams, QueryAndParamsList, RecChng}, sql_utils::SqlOperation};
 use shvclient::appnodes::DotAppNode;
 use shvrpc::{rpcmessage::{RpcError, RpcErrorCode}, RpcMessage};
 use sqlx::postgres::PgPoolOptions;
@@ -139,7 +139,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                         Ok(result) => {
                             resp.set_result(to_rpcvalue(&result).expect("serde should work"));
                             if let Some(sql_info) = result.info {
-                                if sql_info.is_insert() {
+                                if sql_info.operation == SqlOperation::Insert {
                                     let id = result.insert_id;
                                     let rec = query.params();
                                     Some((sql_info, id, rec))

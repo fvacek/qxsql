@@ -757,8 +757,10 @@ mod tests {
 
         // Unsupported operations
         assert!(parse_sql_info("SELECT * FROM users").is_err());
-        assert!(parse_sql_info("DELETE FROM users").is_err());
         assert!(parse_sql_info("CREATE TABLE users").is_err());
+
+        // DELETE operations are supported
+        assert!(parse_sql_info("DELETE FROM users").is_ok());
 
         // Invalid INSERT statements
         assert!(parse_sql_info("INSERT").is_err());
@@ -768,6 +770,31 @@ mod tests {
         // Invalid UPDATE statements
         assert!(parse_sql_info("UPDATE").is_err());
         assert!(parse_sql_info("UPDATE SET name = 'John'").is_err()); // Missing table name
+    }
+
+    #[test]
+    fn test_parse_sql_info_delete_basic() {
+        let info = parse_sql_info("DELETE FROM users WHERE id = 1").unwrap();
+        assert_eq!(info.operation, SqlOperation::Delete);
+        assert_eq!(info.table_name, "users");
+        assert_eq!(info.is_returning_id, false);
+    }
+
+    #[test]
+    fn test_parse_sql_info_delete_case_insensitive() {
+        // Test case insensitivity for DELETE operations
+        let test_cases = vec![
+            "delete from products where price > 100",
+            "Delete From customers Where active = false",
+            "DELETE FROM orders WHERE status = 'cancelled'",
+        ];
+
+        for sql in test_cases {
+            let info = parse_sql_info(sql).unwrap();
+            assert_eq!(info.operation, SqlOperation::Delete);
+            assert!(!info.table_name.is_empty());
+            assert_eq!(info.is_returning_id, false);
+        }
     }
 
     #[test]
@@ -840,7 +867,9 @@ mod tests {
         let sql_statements = vec![
             "INSERT INTO orders (customer_id, total) VALUES (1, 99.99)",
             "UPDATE inventory SET quantity = quantity - 1 WHERE product_id = 123",
+            "DELETE FROM expired_sessions WHERE created_at < NOW() - INTERVAL '1 day'",
             "insert into logs (message, timestamp) values ('test', now())",
+            "delete from temp_data where processed = true",
         ];
 
         for sql in sql_statements {
@@ -854,6 +883,9 @@ mod tests {
                 },
                 SqlOperation::Update => {
                     assert!(sql.to_uppercase().starts_with("UPDATE"));
+                },
+                SqlOperation::Delete => {
+                    assert!(sql.to_uppercase().starts_with("DELETE"));
                 },
             }
             assert!(!info.table_name.is_empty());
@@ -958,6 +990,10 @@ mod tests {
                     // UPDATE operations
                     println!("UPDATE on table '{}' - returning_id is always false for updates", table_name);
                 },
+                SqlInfo { operation: SqlOperation::Delete, table_name, .. } => {
+                    // DELETE operations
+                    println!("DELETE on table '{}' - returning_id is always false for deletes", table_name);
+                },
             }
         }
     }
@@ -978,6 +1014,10 @@ mod tests {
                 println!("UPDATE operation on table: {}", table_name);
                 assert_eq!(returning_id, false);
             },
+            Ok(SqlInfo { operation: SqlOperation::Delete, table_name, is_returning_id: returning_id }) => {
+                println!("DELETE operation on table: {}", table_name);
+                assert_eq!(returning_id, false);
+            },
             Err(e) => panic!("Parse error: {}", e),
         }
 
@@ -985,6 +1025,7 @@ mod tests {
         let statements = vec![
             "INSERT INTO logs (message) VALUES ('System started')",
             "UPDATE users SET last_login = NOW() WHERE id = 123",
+            "DELETE FROM old_records WHERE created_at < '2023-01-01'",
             "insert into products (name, price) values ('Widget', 9.99)",
         ];
 
@@ -996,6 +1037,9 @@ mod tests {
                     },
                     SqlOperation::Update => {
                         println!("Will update table: {}", info.table_name);
+                    },
+                    SqlOperation::Delete => {
+                        println!("Will delete from table: {}", info.table_name);
                     },
                 }
             }
