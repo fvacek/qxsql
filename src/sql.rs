@@ -155,6 +155,7 @@ pub struct RecChng {
     pub table: String,
     pub id: i64,
     pub record: HashMap<String, DbValue>,
+    pub issuer: String,
 }
 
 pub async fn sql_exec(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
@@ -196,7 +197,9 @@ macro_rules! bind_db_values {
 fn parse_sql_info_if_needed(query: &QueryAndParams) -> Option<SqlInfo> {
     if query.issuer().is_some() {
         match crate::sql_utils::parse_sql_info(&query.query()) {
-            Ok(sql_info) => Some(sql_info),
+            Ok(sql_info) => {
+                Some(sql_info)
+            },
             Err(e) => {
                 error!("sql_exec: parse SQL query error: {}", e);
                 None
@@ -211,15 +214,16 @@ macro_rules! sql_exec_impl {
     ($db_pool:expr, $query:expr) => {{
         let sql = prepare_sql_with_params($query);
         let info = parse_sql_info_if_needed($query);
-        
-        if let Some(info) = info && info.is_returning_id {
+
+        let is_returning_id = if let Some(info) = &info && info.is_returning_id { true } else { false };
+        if is_returning_id {
             let insert_id: i64 = sqlx::query_scalar(&sql)
                 .fetch_one($db_pool).await.map_err(sqlx2_to_anyhow)?;
-            Ok(ExecResult { rows_affected: 1, insert_id, info: Some(info) })
+            Ok(ExecResult { rows_affected: 1, insert_id, info: info })
         } else {
             let q = sqlx::query(&sql);
             let result = q.execute($db_pool).await?;
-            Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: 0, info: None })
+            Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: 0, info })
         }
     }};
 }

@@ -160,8 +160,8 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                     if let Err(e) = client_cmd_tx.send_message(resp) {
                         error!("sql_exec: Cannot send response ({e})");
                     }
-                    if let Some((info, id, rec)) = signal {
-                        let recchng = RecChng { table: info.table_name, id, record: rec.clone() };
+                    if let Some((info, id, rec)) = signal && let Some(issuer) = query.issuer() {
+                        let recchng = RecChng {table:info.table_name,id,record:rec.clone(), issuer: issuer.to_string() };
                         match to_rpcvalue(&recchng) {
                             Ok(rv) => {
                                 let msg = RpcMessage::new_signal("sql", "recchng", Some(rv));
