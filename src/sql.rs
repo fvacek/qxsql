@@ -10,20 +10,7 @@ use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
 use anyhow::anyhow;
 
-use crate::sql_utils::{self, postgres_query_positional_args_from_sqlite, parse_rfc3339_datetime};
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SqlOperation {
-    Insert,
-    Update,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SqlInfo {
-    pub operation: SqlOperation,
-    pub table_name: String,
-    pub returning_id: bool,
-}
+use crate::sql_utils::{self, parse_rfc3339_datetime, postgres_query_positional_args_from_sqlite, SqlOperation};
 
 pub enum DbPool {
     Postgres(PgPool),
@@ -142,6 +129,8 @@ impl TryFrom<&RpcValue> for QueryAndParamsList {
 #[derive(Debug,Serialize,Deserialize, Default)]
 pub struct ExecResult {
     pub rows_affected: i64,
+    pub is_insert: bool,
+    pub insert_id: i64,
 }
 #[derive(Debug,Serialize,Deserialize, Default, PartialEq)]
 pub struct SelectResult {
@@ -197,16 +186,54 @@ macro_rules! bind_db_values {
 
 async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
     let sql = prepare_sql_with_params(query);
-    let q = sqlx::query(&sql);
-    let result = q.execute(db_pool).await?;
-    Ok(ExecResult { rows_affected: result.rows_affected() as i64 })
+    let (is_insert, is_returning_insert) = 'aaa: {
+        if query.issuer().is_some() {
+            match crate::sql_utils::parse_sql_info(&query.query()) {
+                Ok(sql_info) => {
+                    break 'aaa (sql_info.operation == SqlOperation::Insert, sql_info.is_returning_id);
+                }
+                Err(e) => {
+                    error!("sql_exec: parse SQL query error: {}", e);
+                }
+            }
+        }
+        (false, false)
+    };
+    if is_returning_insert {
+        let insert_id: i64 = sqlx::query_scalar(&sql)
+            .fetch_one(db_pool).await.map_err(sqlx2_to_anyhow)?;
+        Ok(ExecResult { rows_affected: 1, insert_id, is_insert })
+    } else {
+        let q = sqlx::query(&sql);
+        let result = q.execute(db_pool).await?;
+        Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: 0, is_insert })
+    }
 }
 
 async fn sql_exec_postgres(db_pool: &Pool<Postgres>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
     let sql = prepare_sql_with_params(query);
-    let q = sqlx::query(&sql);
-    let result = q.execute(db_pool).await?;
-    Ok(ExecResult { rows_affected: result.rows_affected() as i64 })
+    let (is_insert, is_returning_insert) = 'aaa: {
+        if query.issuer().is_some() {
+            match crate::sql_utils::parse_sql_info(&query.query()) {
+                Ok(sql_info) => {
+                    break 'aaa (sql_info.operation == SqlOperation::Insert, sql_info.is_returning_id);
+                }
+                Err(e) => {
+                    error!("sql_exec: parse SQL query error: {}", e);
+                }
+            }
+        }
+        (false, false)
+    };
+    if is_returning_insert {
+        let insert_id: i64 = sqlx::query_scalar(&sql)
+            .fetch_one(db_pool).await.map_err(sqlx2_to_anyhow)?;
+        Ok(ExecResult { rows_affected: 1, insert_id, is_insert })
+    } else {
+        let q = sqlx::query(&sql);
+        let result = q.execute(db_pool).await?;
+        Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: 0, is_insert })
+    }
 }
 
 async fn sql_exec_transaction_sqlite(db_pool: &Pool<Sqlite>, query_list: &QueryAndParamsList) -> anyhow::Result<()> {
@@ -274,6 +301,11 @@ fn sqlx_to_anyhow(err: Box<dyn std::error::Error + Send + Sync>) -> anyhow::Erro
     anyhow!("SQL error: {}", err)
 }
 
+fn sqlx2_to_anyhow(err: sqlx::Error) -> anyhow::Error {
+    error!("SQL Error: {err}\nbacktrace: {}", Backtrace::capture());
+    anyhow!("SQL error: {}", err)
+}
+
 // Helper function to determine if a type is text-based
 fn is_text_type(type_name: &str) -> bool {
     type_name.contains("TEXT") ||
@@ -332,100 +364,6 @@ fn db_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<DbVal
     }
 }
 
-/// Parses SQL statement to extract operation type, table name, and RETURNING id clause
-/// 
-/// # Arguments
-/// * `sql` - SQL statement string (case insensitive)
-/// 
-/// # Returns
-/// * `Ok(SqlInfo)` - Contains operation type, table name, and returning_id flag
-/// * `Err(String)` - Error message if parsing fails
-/// 
-/// # Examples
-/// ```
-/// use qxsqld::sql::{parse_sql_info, SqlOperation};
-/// 
-/// let info = parse_sql_info("INSERT INTO users (name) VALUES ('John')").unwrap();
-/// assert_eq!(info.operation, SqlOperation::Insert);
-/// assert_eq!(info.table_name, "users");
-/// assert_eq!(info.returning_id, false);
-/// 
-/// let info = parse_sql_info("INSERT INTO users (name) VALUES ('John') RETURNING id").unwrap();
-/// assert_eq!(info.operation, SqlOperation::Insert);
-/// assert_eq!(info.table_name, "users");
-/// assert_eq!(info.returning_id, true);
-/// 
-/// let info = parse_sql_info("update Products set price = 100").unwrap();
-/// assert_eq!(info.operation, SqlOperation::Update);
-/// assert_eq!(info.table_name, "Products");
-/// assert_eq!(info.returning_id, false);
-/// ```
-pub fn parse_sql_info(sql: &str) -> Result<SqlInfo, String> {
-    let sql = sql.trim();
-    if sql.is_empty() {
-        return Err("Empty SQL statement".to_string());
-    }
-    
-    // Split by whitespace and filter out empty parts
-    let parts: Vec<&str> = sql.split_whitespace().collect();
-    if parts.len() < 3 {
-        return Err("Invalid SQL statement: too few parts".to_string());
-    }
-    
-    let operation_str = parts[0].to_uppercase();
-    let operation = match operation_str.as_str() {
-        "INSERT" => SqlOperation::Insert,
-        "UPDATE" => SqlOperation::Update,
-        _ => return Err(format!("Unsupported SQL operation: {}", parts[0])),
-    };
-    
-    let table_name = match operation {
-        SqlOperation::Insert => {
-            // For INSERT: "INSERT INTO table_name ..."
-            if parts.len() < 3 {
-                return Err("Invalid INSERT statement: missing table name".to_string());
-            }
-            if parts[1].to_uppercase() != "INTO" {
-                return Err("Invalid INSERT statement: expected 'INTO' keyword".to_string());
-            }
-            parts[2].to_string()
-        },
-        SqlOperation::Update => {
-            // For UPDATE: "UPDATE table_name ..."
-            if parts.len() < 2 {
-                return Err("Invalid UPDATE statement: missing table name".to_string());
-            }
-            // Check if the second part is "SET" which would mean no table name
-            if parts[1].to_uppercase() == "SET" {
-                return Err("Invalid UPDATE statement: missing table name".to_string());
-            }
-            parts[1].to_string()
-        },
-    };
-    
-    // Check for RETURNING id clause (only relevant for INSERT)
-    let returning_id = match operation {
-        SqlOperation::Insert => {
-            // Check if the statement ends with "RETURNING id" (case insensitive, ignoring whitespace)
-            let sql_upper = sql.to_uppercase();
-            let trimmed = sql_upper.trim_end();
-            
-            // Split by whitespace and check if the last two tokens are "RETURNING" and "ID"
-            let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-            tokens.len() >= 2 
-                && tokens[tokens.len() - 2] == "RETURNING" 
-                && tokens[tokens.len() - 1] == "ID"
-        },
-        SqlOperation::Update => false, // UPDATE doesn't support RETURNING id in this context
-    };
-    
-    Ok(SqlInfo {
-        operation,
-        table_name,
-        returning_id,
-    })
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, FromRow)]
 pub(crate) struct EventRecord {
     pub id: i64,
@@ -435,7 +373,9 @@ pub(crate) struct EventRecord {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
+    use crate::sql_utils::{parse_sql_info, SqlInfo, SqlOperation};
     use sqlx::sqlite::SqlitePoolOptions;
     use sqlx::postgres::PgPoolOptions;
     use log::warn;
@@ -759,7 +699,7 @@ mod tests {
         let info = parse_sql_info("INSERT INTO users (name) VALUES ('John')").unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "users");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
     }
 
     #[test]
@@ -767,12 +707,12 @@ mod tests {
         let info = parse_sql_info("insert into Products (id, name) values (1, 'Widget')").unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "Products");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
 
         let info = parse_sql_info("Insert Into Orders VALUES (100)").unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "Orders");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
     }
 
     #[test]
@@ -780,7 +720,7 @@ mod tests {
         let info = parse_sql_info("UPDATE users SET name = 'Jane' WHERE id = 1").unwrap();
         assert_eq!(info.operation, SqlOperation::Update);
         assert_eq!(info.table_name, "users");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
     }
 
     #[test]
@@ -788,12 +728,12 @@ mod tests {
         let info = parse_sql_info("update Products set price = 100").unwrap();
         assert_eq!(info.operation, SqlOperation::Update);
         assert_eq!(info.table_name, "Products");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
 
         let info = parse_sql_info("Update CUSTOMERS Set status='active'").unwrap();
         assert_eq!(info.operation, SqlOperation::Update);
         assert_eq!(info.table_name, "CUSTOMERS");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
     }
 
     #[test]
@@ -801,12 +741,12 @@ mod tests {
         let info = parse_sql_info("   INSERT   INTO   users   (name)   VALUES   ('John')   ").unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "users");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
 
         let info = parse_sql_info("\t\nUPDATE\t\nproducts\t\nSET price = 50").unwrap();
         assert_eq!(info.operation, SqlOperation::Update);
         assert_eq!(info.table_name, "products");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
     }
 
     #[test]
@@ -835,17 +775,17 @@ mod tests {
         // Table names with underscores
         let info = parse_sql_info("INSERT INTO user_profiles (data) VALUES ('test')").unwrap();
         assert_eq!(info.table_name, "user_profiles");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
 
         // Table names with numbers
         let info = parse_sql_info("UPDATE table123 SET value = 1").unwrap();
         assert_eq!(info.table_name, "table123");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
 
         // Quoted table names (common in some SQL dialects)
         let info = parse_sql_info("INSERT INTO `special-table` (id) VALUES (1)").unwrap();
         assert_eq!(info.table_name, "`special-table`");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
     }
 
     #[test]
@@ -855,14 +795,14 @@ mod tests {
         let info = parse_sql_info(complex_insert).unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "target_table");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
 
         // Complex UPDATE with joins (simplified parsing)
         let complex_update = "UPDATE orders SET status = 'shipped' WHERE customer_id IN (SELECT id FROM customers WHERE active = true)";
         let info = parse_sql_info(complex_update).unwrap();
         assert_eq!(info.operation, SqlOperation::Update);
         assert_eq!(info.table_name, "orders");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
     }
 
     #[test]
@@ -870,17 +810,17 @@ mod tests {
         // Minimal valid statements
         let info = parse_sql_info("INSERT INTO t VALUES(1)").unwrap();
         assert_eq!(info.table_name, "t");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
 
         let info = parse_sql_info("UPDATE t SET x=1").unwrap();
         assert_eq!(info.table_name, "t");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
 
         // Mixed case keywords
         let info = parse_sql_info("InSeRt InTo MixedCase VALUES (1)").unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "MixedCase");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
     }
 
     #[test]
@@ -889,12 +829,12 @@ mod tests {
         let info = parse_sql_info("INSERT INTO users (name) VALUES ('John')").unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "users");
-        assert_eq!(info.returning_id, false);
-        
+        assert_eq!(info.is_returning_id, false);
+
         let info = parse_sql_info("update Products set price = 100").unwrap();
         assert_eq!(info.operation, SqlOperation::Update);
         assert_eq!(info.table_name, "Products");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
 
         // Test practical usage
         let sql_statements = vec![
@@ -906,7 +846,7 @@ mod tests {
         for sql in sql_statements {
             let result = parse_sql_info(sql);
             assert!(result.is_ok(), "Failed to parse: {}", sql);
-            
+
             let info = result.unwrap();
             match info.operation {
                 SqlOperation::Insert => {
@@ -926,67 +866,67 @@ mod tests {
         let info = parse_sql_info("INSERT INTO users (name) VALUES ('John') RETURNING id").unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "users");
-        assert_eq!(info.returning_id, true);
+        assert_eq!(info.is_returning_id, true);
 
         // Test case insensitive RETURNING ID
         let info = parse_sql_info("insert into products (name) values ('Widget') returning id").unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "products");
-        assert_eq!(info.returning_id, true);
+        assert_eq!(info.is_returning_id, true);
 
         // Test mixed case
         let info = parse_sql_info("INSERT INTO orders (total) VALUES (99.99) Returning Id").unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "orders");
-        assert_eq!(info.returning_id, true);
+        assert_eq!(info.is_returning_id, true);
 
         // Test without RETURNING id
         let info = parse_sql_info("INSERT INTO logs (message) VALUES ('test')").unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "logs");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
 
         // Test UPDATE (should never have returning_id = true)
         let info = parse_sql_info("UPDATE users SET name = 'Jane' RETURNING id").unwrap();
         assert_eq!(info.operation, SqlOperation::Update);
         assert_eq!(info.table_name, "users");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
 
         // Test INSERT with RETURNING other column (should be false)
         let info = parse_sql_info("INSERT INTO users (name) VALUES ('John') RETURNING name").unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "users");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
 
         // Test INSERT with complex RETURNING clause (should be false)
         let info = parse_sql_info("INSERT INTO users (name) VALUES ('John') RETURNING id, name").unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "users");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
 
         // Test INSERT with RETURNING id and extra whitespace
         let info = parse_sql_info("INSERT INTO users (name) VALUES ('John')   RETURNING   id  ").unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "users");
-        assert_eq!(info.returning_id, true);
+        assert_eq!(info.is_returning_id, true);
 
         // Test INSERT with RETURNING ID (uppercase)
         let info = parse_sql_info("INSERT INTO users (name) VALUES ('John') RETURNING ID").unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "users");
-        assert_eq!(info.returning_id, true);
+        assert_eq!(info.is_returning_id, true);
 
         // Test INSERT with partial match (should be false)
         let info = parse_sql_info("INSERT INTO users (name) VALUES ('John') RETURNING identifier").unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "users");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
 
         // Test INSERT that contains "returning id" but doesn't end with it
         let info = parse_sql_info("INSERT INTO users (returning_id) VALUES (1) WHERE x = 'returning id'").unwrap();
         assert_eq!(info.operation, SqlOperation::Insert);
         assert_eq!(info.table_name, "users");
-        assert_eq!(info.returning_id, false);
+        assert_eq!(info.is_returning_id, false);
     }
 
     #[test]
@@ -1002,15 +942,15 @@ mod tests {
 
         for (sql, expected_returning_id) in queries {
             let info = parse_sql_info(sql).unwrap();
-            assert_eq!(info.returning_id, expected_returning_id, "Failed for SQL: {}", sql);
-            
+            assert_eq!(info.is_returning_id, expected_returning_id, "Failed for SQL: {}", sql);
+
             // Demonstrate practical usage
             match info {
-                SqlInfo { operation: SqlOperation::Insert, returning_id: true, table_name } => {
+                SqlInfo { operation: SqlOperation::Insert, is_returning_id: true, table_name } => {
                     // This query expects an ID to be returned - route to special handler
                     println!("INSERT with RETURNING id on table '{}' - will return generated ID", table_name);
                 },
-                SqlInfo { operation: SqlOperation::Insert, returning_id: false, table_name } => {
+                SqlInfo { operation: SqlOperation::Insert, is_returning_id: false, table_name } => {
                     // Regular INSERT - route to standard handler
                     println!("Regular INSERT on table '{}' - no ID expected", table_name);
                 },
@@ -1025,17 +965,16 @@ mod tests {
     #[test]
     fn test_parse_sql_info_api_demonstration() {
         // Demonstrate the public API usage
-        use crate::{SqlOperation, SqlInfo, parse_sql_info};
-        
+
         // Basic usage
         let sql = "INSERT INTO customers (name, email) VALUES ('Alice', 'alice@example.com')";
         match parse_sql_info(sql) {
-            Ok(SqlInfo { operation: SqlOperation::Insert, table_name, returning_id }) => {
+            Ok(SqlInfo { operation: SqlOperation::Insert, table_name, is_returning_id: returning_id }) => {
                 println!("INSERT operation on table: {}", table_name);
                 assert_eq!(table_name, "customers");
                 assert_eq!(returning_id, false);
             },
-            Ok(SqlInfo { operation: SqlOperation::Update, table_name, returning_id }) => {
+            Ok(SqlInfo { operation: SqlOperation::Update, table_name, is_returning_id: returning_id }) => {
                 println!("UPDATE operation on table: {}", table_name);
                 assert_eq!(returning_id, false);
             },

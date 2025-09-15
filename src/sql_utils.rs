@@ -107,11 +107,89 @@ pub(crate) fn postgres_query_positional_args_from_sqlite(input: &str) -> String 
     output
 }
 
-
 pub(crate) fn parse_rfc3339_datetime(s: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(s)
         .ok()
         .map(|dt| dt.with_timezone(&Utc))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SqlOperation {
+    Insert,
+    Update,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SqlInfo {
+    pub operation: SqlOperation,
+    pub table_name: String,
+    pub is_returning_id: bool,
+}
+
+pub fn parse_sql_info(sql: &str) -> Result<SqlInfo, String> {
+    let sql = sql.trim();
+    if sql.is_empty() {
+        return Err("Empty SQL statement".to_string());
+    }
+
+    // Split by whitespace and filter out empty parts
+    let parts: Vec<&str> = sql.split_whitespace().collect();
+    if parts.len() < 3 {
+        return Err("Invalid SQL statement: too few parts".to_string());
+    }
+
+    let operation_str = parts[0].to_uppercase();
+    let operation = match operation_str.as_str() {
+        "INSERT" => SqlOperation::Insert,
+        "UPDATE" => SqlOperation::Update,
+        _ => return Err(format!("Unsupported SQL operation: {}", parts[0])),
+    };
+
+    let table_name = match operation {
+        SqlOperation::Insert => {
+            // For INSERT: "INSERT INTO table_name ..."
+            if parts.len() < 3 {
+                return Err("Invalid INSERT statement: missing table name".to_string());
+            }
+            if parts[1].to_uppercase() != "INTO" {
+                return Err("Invalid INSERT statement: expected 'INTO' keyword".to_string());
+            }
+            parts[2].to_string()
+        },
+        SqlOperation::Update => {
+            // For UPDATE: "UPDATE table_name ..."
+            if parts.len() < 2 {
+                return Err("Invalid UPDATE statement: missing table name".to_string());
+            }
+            // Check if the second part is "SET" which would mean no table name
+            if parts[1].to_uppercase() == "SET" {
+                return Err("Invalid UPDATE statement: missing table name".to_string());
+            }
+            parts[1].to_string()
+        },
+    };
+
+    // Check for RETURNING id clause (only relevant for INSERT)
+    let returning_id = match operation {
+        SqlOperation::Insert => {
+            // Check if the statement ends with "RETURNING id" (case insensitive, ignoring whitespace)
+            let sql_upper = sql.to_uppercase();
+            let trimmed = sql_upper.trim_end();
+
+            // Split by whitespace and check if the last two tokens are "RETURNING" and "ID"
+            let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+            tokens.len() >= 2
+                && tokens[tokens.len() - 2] == "RETURNING"
+                && tokens[tokens.len() - 1] == "ID"
+        },
+        SqlOperation::Update => false, // UPDATE doesn't support RETURNING id in this context
+    };
+
+    Ok(SqlInfo {
+        operation,
+        table_name,
+        is_returning_id: returning_id,
+    })
 }
 
 #[cfg(test)]

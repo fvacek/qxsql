@@ -6,9 +6,8 @@
 pub mod config;
 pub mod sql;
 pub mod shvnode;
-mod sql_utils;
+pub mod sql_utils;
 
-pub use sql::{SqlOperation, SqlInfo, parse_sql_info};
 
 // pub use config::{Config, DbConfig};
 // pub use sql::{DbPool, sql_exec, sql_select};

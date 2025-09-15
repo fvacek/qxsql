@@ -1,6 +1,6 @@
-use qxsqld::sql::{sql_exec, sql_exec_transaction, sql_select, QueryAndParams, QueryAndParamsList};
+use qxsqld::sql::{sql_exec, sql_exec_transaction, sql_select, DbValue, QueryAndParams, QueryAndParamsList};
 use shvclient::appnodes::DotAppNode;
-use shvrpc::rpcmessage::{RpcError, RpcErrorCode};
+use shvrpc::{rpcmessage::{RpcError, RpcErrorCode}, RpcMessage};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::sqlite::SqlitePoolOptions;
 use tokio::sync::RwLock;
@@ -135,21 +135,36 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                 tokio::task::spawn(async move {
                     let state = app_state.read().await;
                     let result = sql_exec(&state, &query).await;
-                    match result {
+                    let signal = match result {
                         Ok(result) => {
-                            if let Some(issuer) = query.issuer() {
-                                if let Some(id) = query.params().get("id") {
-
-                                }
-                            }
                             resp.set_result(to_rpcvalue(&result).expect("serde should work"));
+                            if let Some(issuer) = query.issuer() {
+                                if result.is_insert {
+                                    let id = result.insert_id;
+                                    let rec = query.params();
+                                    Some((issuer, id, rec))
+                                } else {
+                                    let id = if let Some(DbValue::Int(id)) = query.params().get("id") { *id } else { 0 };
+                                    let rec = query.params();
+                                    Some((issuer, id, rec))
+                                }
+                            } else {
+                                None
+                            }
                         }
                         Err(e) => {
                             resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("SQL error: {}", e)));
+                            None
                         },
                     };
                     if let Err(e) = client_cmd_tx.send_message(resp) {
                         error!("sql_exec: Cannot send response ({e})");
+                    }
+                    if let Some(_signal) = signal {
+                        let msg = RpcMessage::new_signal("sql", "recchng", None);
+                        if let Err(e) = client_cmd_tx.send_message(msg) {
+                            error!("sql_exec: Cannot send signal ({e})");
+                        }
                     }
                 });
                 None
