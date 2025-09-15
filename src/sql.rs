@@ -10,7 +10,20 @@ use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
 use anyhow::anyhow;
 
-use crate::sql_utils::{self, parse_rfc3339_datetime, postgres_query_positional_args_from_sqlite};
+use crate::sql_utils::{self, postgres_query_positional_args_from_sqlite, parse_rfc3339_datetime};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SqlOperation {
+    Insert,
+    Update,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SqlInfo {
+    pub operation: SqlOperation,
+    pub table_name: String,
+    pub returning_id: bool,
+}
 
 pub enum DbPool {
     Postgres(PgPool),
@@ -71,14 +84,16 @@ impl From<()> for DbValue {
 /// - `["SELECT * FROM table", {}]` - query with empty parameters object
 #[derive(Debug,Serialize,Deserialize)]
 pub struct QueryAndParams(
-    pub String,
+    pub String, // query
     #[serde(default)]
-    pub HashMap<String, DbValue>
+    pub HashMap<String, DbValue>, // params
+    #[serde(default)]
+    pub Option<String>, // issuer
 );
 
 impl QueryAndParams {
-    pub fn new(query: String, params: HashMap<String, DbValue>) -> Self {
-        QueryAndParams(query, params)
+    pub fn new(query: String, params: HashMap<String, DbValue>, issuer: Option<&str>) -> Self {
+        QueryAndParams(query, params, issuer.map(|s| s.to_string()))
     }
 
     pub fn query(&self) -> &str {
@@ -95,6 +110,10 @@ impl QueryAndParams {
 
     pub fn params_mut(&mut self) -> &mut HashMap<String, DbValue> {
         &mut self.1
+    }
+
+    pub fn issuer(&self) -> Option<&str> {
+        self.2.as_ref().map(|x| x.as_str())
     }
 }
 
@@ -313,6 +332,100 @@ fn db_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<DbVal
     }
 }
 
+/// Parses SQL statement to extract operation type, table name, and RETURNING id clause
+/// 
+/// # Arguments
+/// * `sql` - SQL statement string (case insensitive)
+/// 
+/// # Returns
+/// * `Ok(SqlInfo)` - Contains operation type, table name, and returning_id flag
+/// * `Err(String)` - Error message if parsing fails
+/// 
+/// # Examples
+/// ```
+/// use qxsqld::sql::{parse_sql_info, SqlOperation};
+/// 
+/// let info = parse_sql_info("INSERT INTO users (name) VALUES ('John')").unwrap();
+/// assert_eq!(info.operation, SqlOperation::Insert);
+/// assert_eq!(info.table_name, "users");
+/// assert_eq!(info.returning_id, false);
+/// 
+/// let info = parse_sql_info("INSERT INTO users (name) VALUES ('John') RETURNING id").unwrap();
+/// assert_eq!(info.operation, SqlOperation::Insert);
+/// assert_eq!(info.table_name, "users");
+/// assert_eq!(info.returning_id, true);
+/// 
+/// let info = parse_sql_info("update Products set price = 100").unwrap();
+/// assert_eq!(info.operation, SqlOperation::Update);
+/// assert_eq!(info.table_name, "Products");
+/// assert_eq!(info.returning_id, false);
+/// ```
+pub fn parse_sql_info(sql: &str) -> Result<SqlInfo, String> {
+    let sql = sql.trim();
+    if sql.is_empty() {
+        return Err("Empty SQL statement".to_string());
+    }
+    
+    // Split by whitespace and filter out empty parts
+    let parts: Vec<&str> = sql.split_whitespace().collect();
+    if parts.len() < 3 {
+        return Err("Invalid SQL statement: too few parts".to_string());
+    }
+    
+    let operation_str = parts[0].to_uppercase();
+    let operation = match operation_str.as_str() {
+        "INSERT" => SqlOperation::Insert,
+        "UPDATE" => SqlOperation::Update,
+        _ => return Err(format!("Unsupported SQL operation: {}", parts[0])),
+    };
+    
+    let table_name = match operation {
+        SqlOperation::Insert => {
+            // For INSERT: "INSERT INTO table_name ..."
+            if parts.len() < 3 {
+                return Err("Invalid INSERT statement: missing table name".to_string());
+            }
+            if parts[1].to_uppercase() != "INTO" {
+                return Err("Invalid INSERT statement: expected 'INTO' keyword".to_string());
+            }
+            parts[2].to_string()
+        },
+        SqlOperation::Update => {
+            // For UPDATE: "UPDATE table_name ..."
+            if parts.len() < 2 {
+                return Err("Invalid UPDATE statement: missing table name".to_string());
+            }
+            // Check if the second part is "SET" which would mean no table name
+            if parts[1].to_uppercase() == "SET" {
+                return Err("Invalid UPDATE statement: missing table name".to_string());
+            }
+            parts[1].to_string()
+        },
+    };
+    
+    // Check for RETURNING id clause (only relevant for INSERT)
+    let returning_id = match operation {
+        SqlOperation::Insert => {
+            // Check if the statement ends with "RETURNING id" (case insensitive, ignoring whitespace)
+            let sql_upper = sql.to_uppercase();
+            let trimmed = sql_upper.trim_end();
+            
+            // Split by whitespace and check if the last two tokens are "RETURNING" and "ID"
+            let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+            tokens.len() >= 2 
+                && tokens[tokens.len() - 2] == "RETURNING" 
+                && tokens[tokens.len() - 1] == "ID"
+        },
+        SqlOperation::Update => false, // UPDATE doesn't support RETURNING id in this context
+    };
+    
+    Ok(SqlInfo {
+        operation,
+        table_name,
+        returning_id,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, FromRow)]
 pub(crate) struct EventRecord {
     pub id: i64,
@@ -331,6 +444,7 @@ mod tests {
         let qp = QueryAndParams(
             "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, created TEXT)".into(),
             HashMap::new(),
+            None
         );
         let res = sql_exec(&db_pool, &qp).await;
         res.unwrap();
@@ -338,13 +452,16 @@ mod tests {
         let dt = DbValue::DateTime(parse_rfc3339_datetime("2025-09-12T15:04:05Z").unwrap());
         let qp = QueryAndParams(
             "INSERT INTO users (id, name, created) VALUES (:id, :name, :created)".into(),
-            [ ("id".to_string(), 1.into()), ("name".to_string(), "Jane Doe".into()), ("created".to_string(), dt.clone()), ].into_iter().collect(), );
+            [ ("id".to_string(), 1.into()), ("name".to_string(), "Jane Doe".into()), ("created".to_string(), dt.clone()), ].into_iter().collect(),
+            None
+        );
         let res = sql_exec(&db_pool, &qp).await;
         res.unwrap();
 
         let qp = QueryAndParams(
             "SELECT * FROM users".into(),
             HashMap::new(),
+            None
         );
         let result = sql_select(&db_pool, &qp).await;
         let expected = SelectResult {
@@ -375,6 +492,7 @@ mod tests {
                     let qp = QueryAndParams(
                         "DROP TABLE IF EXISTS users".into(),
                         HashMap::new(),
+                        None
                     );
                     sql_exec_postgres(pool, &qp).await
                 },
@@ -392,6 +510,7 @@ mod tests {
         let mut qp = QueryAndParams::new(
             "SELECT * FROM users WHERE id = :id".to_string(),
             [("id".to_string(), DbValue::Int(1))].into_iter().collect(),
+            None
         );
 
         // Test getter methods
@@ -426,7 +545,7 @@ mod tests {
     #[test]
     fn test_serde_serialization_roundtrip() {
         // Test with empty params
-        let qp = QueryAndParams("SELECT * FROM users".to_string(), HashMap::new());
+        let qp = QueryAndParams("SELECT * FROM users".to_string(), HashMap::new(), None);
         let json = serde_json::to_string(&qp).unwrap();
         let deserialized: QueryAndParams = serde_json::from_str(&json).unwrap();
 
@@ -440,7 +559,7 @@ mod tests {
         params.insert("active".to_string(), DbValue::Bool(true));
         params.insert("deleted".to_string(), DbValue::Null);
 
-        let qp = QueryAndParams("SELECT * FROM users WHERE id = :id AND name = :name".to_string(), params);
+        let qp = QueryAndParams("SELECT * FROM users WHERE id = :id AND name = :name".to_string(), params, None);
         let json = serde_json::to_string(&qp).unwrap();
         let deserialized: QueryAndParams = serde_json::from_str(&json).unwrap();
 
@@ -480,6 +599,7 @@ mod tests {
         let create_table = QueryAndParams(
             "CREATE TABLE test_users (id INTEGER, name TEXT, active BOOL)".into(),
             HashMap::new(),
+            None
         );
         sql_exec(&db_pool, &create_table).await.unwrap();
 
@@ -500,6 +620,7 @@ mod tests {
         let select_query = QueryAndParams(
             "SELECT COUNT(*) as count FROM test_users".into(),
             HashMap::new(),
+            None
         );
         let count_result = sql_select(&db_pool, &select_query).await.unwrap();
         assert_eq!(count_result.rows.len(), 1);
@@ -527,6 +648,7 @@ mod tests {
         let create_table = QueryAndParams(
             "CREATE TABLE rollback_test (id INTEGER UNIQUE, name TEXT)".into(),
             HashMap::new(),
+            None
         );
         sql_exec(&db_pool, &create_table).await.unwrap();
 
@@ -535,6 +657,7 @@ mod tests {
             "INSERT INTO rollback_test (id, name) VALUES (:id, :name)".into(),
             [("id".to_string(), DbValue::Int(1)), ("name".to_string(), DbValue::String("Initial".into()))]
                 .into_iter().collect(),
+            None
         );
         sql_exec(&db_pool, &initial_insert).await.unwrap();
 
@@ -555,6 +678,7 @@ mod tests {
         let count_query = QueryAndParams(
             "SELECT COUNT(*) as count FROM rollback_test".into(),
             HashMap::new(),
+            None
         );
         let count_result = sql_select(&db_pool, &count_query).await.unwrap();
         assert_eq!(count_result.rows[0][0], DbValue::Int(1), "Transaction should be rolled back");
@@ -563,6 +687,7 @@ mod tests {
         let select_all = QueryAndParams(
             "SELECT id, name FROM rollback_test".into(),
             HashMap::new(),
+            None
         );
         let all_data = sql_select(&db_pool, &select_all).await.unwrap();
         assert_eq!(all_data.rows.len(), 1);
@@ -601,7 +726,7 @@ mod tests {
             // Clean up any existing test tables
             let _ = match &db_pool {
                 DbPool::Postgres(pool) => {
-                    let drop1 = QueryAndParams("DROP TABLE IF EXISTS test_users".into(), HashMap::new());
+                    let drop1 = QueryAndParams("DROP TABLE IF EXISTS test_users".into(), HashMap::new(), None);
                     sql_exec_postgres(pool, &drop1).await.ok();
                 },
                 _ => panic!("not a postgres pool"),
@@ -617,7 +742,7 @@ mod tests {
 
             let _ = match &db_pool2 {
                 DbPool::Postgres(pool) => {
-                    let drop2 = QueryAndParams("DROP TABLE IF EXISTS rollback_test".into(), HashMap::new());
+                    let drop2 = QueryAndParams("DROP TABLE IF EXISTS rollback_test".into(), HashMap::new(), None);
                     sql_exec_postgres(pool, &drop2).await.ok();
                 },
                 _ => panic!("not a postgres pool"),
@@ -629,4 +754,312 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_parse_sql_info_insert_basic() {
+        let info = parse_sql_info("INSERT INTO users (name) VALUES ('John')").unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "users");
+        assert_eq!(info.returning_id, false);
+    }
+
+    #[test]
+    fn test_parse_sql_info_insert_case_insensitive() {
+        let info = parse_sql_info("insert into Products (id, name) values (1, 'Widget')").unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "Products");
+        assert_eq!(info.returning_id, false);
+
+        let info = parse_sql_info("Insert Into Orders VALUES (100)").unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "Orders");
+        assert_eq!(info.returning_id, false);
+    }
+
+    #[test]
+    fn test_parse_sql_info_update_basic() {
+        let info = parse_sql_info("UPDATE users SET name = 'Jane' WHERE id = 1").unwrap();
+        assert_eq!(info.operation, SqlOperation::Update);
+        assert_eq!(info.table_name, "users");
+        assert_eq!(info.returning_id, false);
+    }
+
+    #[test]
+    fn test_parse_sql_info_update_case_insensitive() {
+        let info = parse_sql_info("update Products set price = 100").unwrap();
+        assert_eq!(info.operation, SqlOperation::Update);
+        assert_eq!(info.table_name, "Products");
+        assert_eq!(info.returning_id, false);
+
+        let info = parse_sql_info("Update CUSTOMERS Set status='active'").unwrap();
+        assert_eq!(info.operation, SqlOperation::Update);
+        assert_eq!(info.table_name, "CUSTOMERS");
+        assert_eq!(info.returning_id, false);
+    }
+
+    #[test]
+    fn test_parse_sql_info_with_extra_whitespace() {
+        let info = parse_sql_info("   INSERT   INTO   users   (name)   VALUES   ('John')   ").unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "users");
+        assert_eq!(info.returning_id, false);
+
+        let info = parse_sql_info("\t\nUPDATE\t\nproducts\t\nSET price = 50").unwrap();
+        assert_eq!(info.operation, SqlOperation::Update);
+        assert_eq!(info.table_name, "products");
+        assert_eq!(info.returning_id, false);
+    }
+
+    #[test]
+    fn test_parse_sql_info_errors() {
+        // Empty string
+        assert!(parse_sql_info("").is_err());
+        assert!(parse_sql_info("   ").is_err());
+
+        // Unsupported operations
+        assert!(parse_sql_info("SELECT * FROM users").is_err());
+        assert!(parse_sql_info("DELETE FROM users").is_err());
+        assert!(parse_sql_info("CREATE TABLE users").is_err());
+
+        // Invalid INSERT statements
+        assert!(parse_sql_info("INSERT").is_err());
+        assert!(parse_sql_info("INSERT users").is_err());
+        assert!(parse_sql_info("INSERT FROM users").is_err()); // Should be INTO
+
+        // Invalid UPDATE statements
+        assert!(parse_sql_info("UPDATE").is_err());
+        assert!(parse_sql_info("UPDATE SET name = 'John'").is_err()); // Missing table name
+    }
+
+    #[test]
+    fn test_parse_sql_info_table_names_with_special_chars() {
+        // Table names with underscores
+        let info = parse_sql_info("INSERT INTO user_profiles (data) VALUES ('test')").unwrap();
+        assert_eq!(info.table_name, "user_profiles");
+        assert_eq!(info.returning_id, false);
+
+        // Table names with numbers
+        let info = parse_sql_info("UPDATE table123 SET value = 1").unwrap();
+        assert_eq!(info.table_name, "table123");
+        assert_eq!(info.returning_id, false);
+
+        // Quoted table names (common in some SQL dialects)
+        let info = parse_sql_info("INSERT INTO `special-table` (id) VALUES (1)").unwrap();
+        assert_eq!(info.table_name, "`special-table`");
+        assert_eq!(info.returning_id, false);
+    }
+
+    #[test]
+    fn test_parse_sql_info_complex_statements() {
+        // Complex INSERT with subquery
+        let complex_insert = "INSERT INTO target_table (col1, col2) SELECT a, b FROM source_table WHERE condition = 1";
+        let info = parse_sql_info(complex_insert).unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "target_table");
+        assert_eq!(info.returning_id, false);
+
+        // Complex UPDATE with joins (simplified parsing)
+        let complex_update = "UPDATE orders SET status = 'shipped' WHERE customer_id IN (SELECT id FROM customers WHERE active = true)";
+        let info = parse_sql_info(complex_update).unwrap();
+        assert_eq!(info.operation, SqlOperation::Update);
+        assert_eq!(info.table_name, "orders");
+        assert_eq!(info.returning_id, false);
+    }
+
+    #[test]
+    fn test_parse_sql_info_edge_cases() {
+        // Minimal valid statements
+        let info = parse_sql_info("INSERT INTO t VALUES(1)").unwrap();
+        assert_eq!(info.table_name, "t");
+        assert_eq!(info.returning_id, false);
+
+        let info = parse_sql_info("UPDATE t SET x=1").unwrap();
+        assert_eq!(info.table_name, "t");
+        assert_eq!(info.returning_id, false);
+
+        // Mixed case keywords
+        let info = parse_sql_info("InSeRt InTo MixedCase VALUES (1)").unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "MixedCase");
+        assert_eq!(info.returning_id, false);
+    }
+
+    #[test]
+    fn test_parse_sql_info_usage_examples() {
+        // Test the examples from the function documentation
+        let info = parse_sql_info("INSERT INTO users (name) VALUES ('John')").unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "users");
+        assert_eq!(info.returning_id, false);
+        
+        let info = parse_sql_info("update Products set price = 100").unwrap();
+        assert_eq!(info.operation, SqlOperation::Update);
+        assert_eq!(info.table_name, "Products");
+        assert_eq!(info.returning_id, false);
+
+        // Test practical usage
+        let sql_statements = vec![
+            "INSERT INTO orders (customer_id, total) VALUES (1, 99.99)",
+            "UPDATE inventory SET quantity = quantity - 1 WHERE product_id = 123",
+            "insert into logs (message, timestamp) values ('test', now())",
+        ];
+
+        for sql in sql_statements {
+            let result = parse_sql_info(sql);
+            assert!(result.is_ok(), "Failed to parse: {}", sql);
+            
+            let info = result.unwrap();
+            match info.operation {
+                SqlOperation::Insert => {
+                    assert!(sql.to_uppercase().starts_with("INSERT"));
+                },
+                SqlOperation::Update => {
+                    assert!(sql.to_uppercase().starts_with("UPDATE"));
+                },
+            }
+            assert!(!info.table_name.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_parse_sql_info_returning_id() {
+        // Test INSERT with RETURNING id clause
+        let info = parse_sql_info("INSERT INTO users (name) VALUES ('John') RETURNING id").unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "users");
+        assert_eq!(info.returning_id, true);
+
+        // Test case insensitive RETURNING ID
+        let info = parse_sql_info("insert into products (name) values ('Widget') returning id").unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "products");
+        assert_eq!(info.returning_id, true);
+
+        // Test mixed case
+        let info = parse_sql_info("INSERT INTO orders (total) VALUES (99.99) Returning Id").unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "orders");
+        assert_eq!(info.returning_id, true);
+
+        // Test without RETURNING id
+        let info = parse_sql_info("INSERT INTO logs (message) VALUES ('test')").unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "logs");
+        assert_eq!(info.returning_id, false);
+
+        // Test UPDATE (should never have returning_id = true)
+        let info = parse_sql_info("UPDATE users SET name = 'Jane' RETURNING id").unwrap();
+        assert_eq!(info.operation, SqlOperation::Update);
+        assert_eq!(info.table_name, "users");
+        assert_eq!(info.returning_id, false);
+
+        // Test INSERT with RETURNING other column (should be false)
+        let info = parse_sql_info("INSERT INTO users (name) VALUES ('John') RETURNING name").unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "users");
+        assert_eq!(info.returning_id, false);
+
+        // Test INSERT with complex RETURNING clause (should be false)
+        let info = parse_sql_info("INSERT INTO users (name) VALUES ('John') RETURNING id, name").unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "users");
+        assert_eq!(info.returning_id, false);
+
+        // Test INSERT with RETURNING id and extra whitespace
+        let info = parse_sql_info("INSERT INTO users (name) VALUES ('John')   RETURNING   id  ").unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "users");
+        assert_eq!(info.returning_id, true);
+
+        // Test INSERT with RETURNING ID (uppercase)
+        let info = parse_sql_info("INSERT INTO users (name) VALUES ('John') RETURNING ID").unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "users");
+        assert_eq!(info.returning_id, true);
+
+        // Test INSERT with partial match (should be false)
+        let info = parse_sql_info("INSERT INTO users (name) VALUES ('John') RETURNING identifier").unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "users");
+        assert_eq!(info.returning_id, false);
+
+        // Test INSERT that contains "returning id" but doesn't end with it
+        let info = parse_sql_info("INSERT INTO users (returning_id) VALUES (1) WHERE x = 'returning id'").unwrap();
+        assert_eq!(info.operation, SqlOperation::Insert);
+        assert_eq!(info.table_name, "users");
+        assert_eq!(info.returning_id, false);
+    }
+
+    #[test]
+    fn test_parse_sql_info_returning_id_practical_usage() {
+        // Practical example: routing INSERT queries based on returning_id flag
+        let queries = vec![
+            ("INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')", false),
+            ("INSERT INTO users (name, email) VALUES ('Bob', 'bob@example.com') RETURNING id", true),
+            ("INSERT INTO orders (user_id, total) VALUES (1, 99.99) returning id", true),
+            ("UPDATE users SET last_login = NOW() WHERE id = 1", false),
+            ("INSERT INTO logs (message) VALUES ('System started') RETURNING ID", true),
+        ];
+
+        for (sql, expected_returning_id) in queries {
+            let info = parse_sql_info(sql).unwrap();
+            assert_eq!(info.returning_id, expected_returning_id, "Failed for SQL: {}", sql);
+            
+            // Demonstrate practical usage
+            match info {
+                SqlInfo { operation: SqlOperation::Insert, returning_id: true, table_name } => {
+                    // This query expects an ID to be returned - route to special handler
+                    println!("INSERT with RETURNING id on table '{}' - will return generated ID", table_name);
+                },
+                SqlInfo { operation: SqlOperation::Insert, returning_id: false, table_name } => {
+                    // Regular INSERT - route to standard handler
+                    println!("Regular INSERT on table '{}' - no ID expected", table_name);
+                },
+                SqlInfo { operation: SqlOperation::Update, table_name, .. } => {
+                    // UPDATE operations
+                    println!("UPDATE on table '{}' - returning_id is always false for updates", table_name);
+                },
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_sql_info_api_demonstration() {
+        // Demonstrate the public API usage
+        use crate::{SqlOperation, SqlInfo, parse_sql_info};
+        
+        // Basic usage
+        let sql = "INSERT INTO customers (name, email) VALUES ('Alice', 'alice@example.com')";
+        match parse_sql_info(sql) {
+            Ok(SqlInfo { operation: SqlOperation::Insert, table_name, returning_id }) => {
+                println!("INSERT operation on table: {}", table_name);
+                assert_eq!(table_name, "customers");
+                assert_eq!(returning_id, false);
+            },
+            Ok(SqlInfo { operation: SqlOperation::Update, table_name, returning_id }) => {
+                println!("UPDATE operation on table: {}", table_name);
+                assert_eq!(returning_id, false);
+            },
+            Err(e) => panic!("Parse error: {}", e),
+        }
+
+        // Pattern matching usage
+        let statements = vec![
+            "INSERT INTO logs (message) VALUES ('System started')",
+            "UPDATE users SET last_login = NOW() WHERE id = 123",
+            "insert into products (name, price) values ('Widget', 9.99)",
+        ];
+
+        for stmt in statements {
+            if let Ok(info) = parse_sql_info(stmt) {
+                match info.operation {
+                    SqlOperation::Insert => {
+                        println!("Will insert into table: {}", info.table_name);
+                    },
+                    SqlOperation::Update => {
+                        println!("Will update table: {}", info.table_name);
+                    },
+                }
+            }
+        }
+    }
 }

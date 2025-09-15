@@ -125,27 +125,36 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                         Err(e) => resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("SQL error: {}", e))),
                     };
                     if let Err(e) = client_cmd_tx.send_message(resp) {
-                        error!("sql_select_handler: Cannot send response ({e})");
+                        error!("sql_select: Cannot send response ({e})");
                     }
                 });
                 None
             }
-            "exec" [None, Read, "[s:query,{s|i|b|t|n}:params]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParams) => {
+            "exec" [None, Read, "[s:query,{s|i|b|t|n}:params,s|n:issuer]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParams) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
                     let state = app_state.read().await;
                     let result = sql_exec(&state, &query).await;
                     match result {
-                        Ok(result) => resp.set_result(to_rpcvalue(&result).expect("serde should work")),
-                        Err(e) => resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("SQL error: {}", e))),
+                        Ok(result) => {
+                            if let Some(issuer) = query.issuer() {
+                                if let Some(id) = query.params().get("id") {
+
+                                }
+                            }
+                            resp.set_result(to_rpcvalue(&result).expect("serde should work"));
+                        }
+                        Err(e) => {
+                            resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("SQL error: {}", e)));
+                        },
                     };
                     if let Err(e) = client_cmd_tx.send_message(resp) {
-                        error!("sql_exec_handler: Cannot send response ({e})");
+                        error!("sql_exec: Cannot send response ({e})");
                     }
                 });
                 None
             }
-            "transaction" [None, Read, "[s:query,[{s|i|b|t|n}]:params]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParamsList) => {
+            "transaction" [None, Read, "[s:query,[[s|i|b|t|n]]:params]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParamsList) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
                     let state = app_state.read().await;
@@ -155,7 +164,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                         Err(e) => resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("SQL error: {}", e))),
                     };
                     if let Err(e) = client_cmd_tx.send_message(resp) {
-                        error!("sql_exec_handler: Cannot send response ({e})");
+                        error!("sql_transaction: Cannot send response ({e})");
                     }
                 });
                 None
