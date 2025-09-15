@@ -10,7 +10,7 @@ use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
 use anyhow::anyhow;
 
-use crate::sql_utils::{self, parse_rfc3339_datetime, postgres_query_positional_args_from_sqlite, SqlOperation};
+use crate::sql_utils::{self, parse_rfc3339_datetime, postgres_query_positional_args_from_sqlite, SqlInfo};
 
 pub enum DbPool {
     Postgres(PgPool),
@@ -126,20 +126,21 @@ impl TryFrom<&RpcValue> for QueryAndParamsList {
     }
 }
 
-#[derive(Debug,Serialize,Deserialize, Default)]
+#[derive(Debug, Serialize,Deserialize, PartialEq)]
+pub struct DbField {
+    pub name: String,
+}
+
+#[derive(Debug, Serialize,Deserialize, Default)]
 pub struct ExecResult {
     pub rows_affected: i64,
-    pub is_insert: bool,
     pub insert_id: i64,
+    pub info: Option<SqlInfo>
 }
-#[derive(Debug,Serialize,Deserialize, Default, PartialEq)]
+#[derive(Debug, Serialize,Deserialize, Default, PartialEq)]
 pub struct SelectResult {
     pub fields: Vec<DbField>,
     pub rows: Vec<Vec<DbValue>>,
-}
-#[derive(Debug,Serialize,Deserialize, PartialEq)]
-pub struct DbField {
-    pub name: String,
 }
 
 pub async fn sql_select(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<SelectResult> {
@@ -147,6 +148,13 @@ pub async fn sql_select(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<S
         DbPool::Sqlite(pool) => sql_select_sqlite(pool, query).await,
         DbPool::Postgres(pool) => sql_select_postgres(pool, query).await,
     }
+}
+
+#[derive(Debug, Serialize,Deserialize, PartialEq)]
+pub struct RecChng {
+    pub table: String,
+    pub id: i64,
+    pub record: HashMap<String, DbValue>,
 }
 
 pub async fn sql_exec(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
@@ -186,53 +194,53 @@ macro_rules! bind_db_values {
 
 async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
     let sql = prepare_sql_with_params(query);
-    let (is_insert, is_returning_insert) = 'aaa: {
+    let info = 'aaa: {
         if query.issuer().is_some() {
             match crate::sql_utils::parse_sql_info(&query.query()) {
                 Ok(sql_info) => {
-                    break 'aaa (sql_info.operation == SqlOperation::Insert, sql_info.is_returning_id);
+                    break 'aaa Some(sql_info);
                 }
                 Err(e) => {
                     error!("sql_exec: parse SQL query error: {}", e);
                 }
             }
         }
-        (false, false)
+        None
     };
-    if is_returning_insert {
+    if let Some(info) = info && info.is_returning_id {
         let insert_id: i64 = sqlx::query_scalar(&sql)
             .fetch_one(db_pool).await.map_err(sqlx2_to_anyhow)?;
-        Ok(ExecResult { rows_affected: 1, insert_id, is_insert })
+        Ok(ExecResult { rows_affected: 1, insert_id, info: Some(info) })
     } else {
         let q = sqlx::query(&sql);
         let result = q.execute(db_pool).await?;
-        Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: 0, is_insert })
+        Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: 0, info: None })
     }
 }
 
 async fn sql_exec_postgres(db_pool: &Pool<Postgres>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
     let sql = prepare_sql_with_params(query);
-    let (is_insert, is_returning_insert) = 'aaa: {
+    let info = 'aaa: {
         if query.issuer().is_some() {
             match crate::sql_utils::parse_sql_info(&query.query()) {
                 Ok(sql_info) => {
-                    break 'aaa (sql_info.operation == SqlOperation::Insert, sql_info.is_returning_id);
+                    break 'aaa Some(sql_info);
                 }
                 Err(e) => {
                     error!("sql_exec: parse SQL query error: {}", e);
                 }
             }
         }
-        (false, false)
+        None
     };
-    if is_returning_insert {
+    if let Some(info) = info && info.is_returning_id {
         let insert_id: i64 = sqlx::query_scalar(&sql)
             .fetch_one(db_pool).await.map_err(sqlx2_to_anyhow)?;
-        Ok(ExecResult { rows_affected: 1, insert_id, is_insert })
+        Ok(ExecResult { rows_affected: 1, insert_id, info: Some(info) })
     } else {
         let q = sqlx::query(&sql);
         let result = q.execute(db_pool).await?;
-        Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: 0, is_insert })
+        Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: 0, info: None })
     }
 }
 

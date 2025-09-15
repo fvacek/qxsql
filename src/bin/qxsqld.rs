@@ -1,4 +1,4 @@
-use qxsqld::sql::{sql_exec, sql_exec_transaction, sql_select, DbValue, QueryAndParams, QueryAndParamsList};
+use qxsqld::sql::{sql_exec, sql_exec_transaction, sql_select, DbValue, QueryAndParams, QueryAndParamsList, RecChng};
 use shvclient::appnodes::DotAppNode;
 use shvrpc::{rpcmessage::{RpcError, RpcErrorCode}, RpcMessage};
 use sqlx::postgres::PgPoolOptions;
@@ -138,15 +138,15 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                     let signal = match result {
                         Ok(result) => {
                             resp.set_result(to_rpcvalue(&result).expect("serde should work"));
-                            if let Some(issuer) = query.issuer() {
-                                if result.is_insert {
+                            if let Some(sql_info) = result.info {
+                                if sql_info.is_insert() {
                                     let id = result.insert_id;
                                     let rec = query.params();
-                                    Some((issuer, id, rec))
+                                    Some((sql_info, id, rec))
                                 } else {
                                     let id = if let Some(DbValue::Int(id)) = query.params().get("id") { *id } else { 0 };
                                     let rec = query.params();
-                                    Some((issuer, id, rec))
+                                    Some((sql_info, id, rec))
                                 }
                             } else {
                                 None
@@ -160,10 +160,18 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                     if let Err(e) = client_cmd_tx.send_message(resp) {
                         error!("sql_exec: Cannot send response ({e})");
                     }
-                    if let Some(_signal) = signal {
-                        let msg = RpcMessage::new_signal("sql", "recchng", None);
-                        if let Err(e) = client_cmd_tx.send_message(msg) {
-                            error!("sql_exec: Cannot send signal ({e})");
+                    if let Some((info, id, rec)) = signal {
+                        let recchng = RecChng { table: info.table_name, id, record: rec.clone() };
+                        match to_rpcvalue(&recchng) {
+                            Ok(rv) => {
+                                let msg = RpcMessage::new_signal("sql", "recchng", Some(rv));
+                                if let Err(e) = client_cmd_tx.send_message(msg) {
+                                    error!("sql_exec: Cannot send signal ({e})");
+                                }
+                            },
+                            Err(e) => {
+                                error!("sql_exec: Cannot convert RecChng to RPC value ({e})");
+                            }
                         }
                     }
                 });

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::sql::DbValue;
 
@@ -113,17 +114,22 @@ pub(crate) fn parse_rfc3339_datetime(s: &str) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SqlOperation {
     Insert,
     Update,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SqlInfo {
     pub operation: SqlOperation,
     pub table_name: String,
     pub is_returning_id: bool,
+}
+impl SqlInfo {
+    pub fn is_insert(&self) -> bool {
+        self.operation == SqlOperation::Insert
+    }
 }
 
 pub fn parse_sql_info(sql: &str) -> Result<SqlInfo, String> {
