@@ -103,7 +103,7 @@ pub fn new(query: String, params: HashMap<String, DbValue>, issuer: Option<&str>
     }
 
     pub fn issuer(&self) -> Option<&str> {
-        self.2.as_ref().map(|x| x.as_str())
+        self.2.as_deref()
     }
 }
 
@@ -199,7 +199,7 @@ macro_rules! bind_db_values {
 // Common logic for SQL execution
 fn parse_sql_info_if_needed(query: &QueryAndParams) -> Option<SqlInfo> {
     if query.issuer().is_some() {
-        match crate::sql_utils::parse_sql_info(&query.query()) {
+        match crate::sql_utils::parse_sql_info(query.query()) {
             Ok(sql_info) => {
                 Some(sql_info)
             },
@@ -222,7 +222,7 @@ macro_rules! sql_exec_impl {
         if is_returning_id {
             let insert_id: i64 = sqlx::query_scalar(&sql)
                 .fetch_one($db_pool).await.map_err(sqlx2_to_anyhow)?;
-            Ok(ExecResult { rows_affected: 1, insert_id, info: info })
+            Ok(ExecResult { rows_affected: 1, insert_id, info })
         } else {
             let q = sqlx::query(&sql);
             let result = q.execute($db_pool).await?;
@@ -270,8 +270,7 @@ where
     let mut result: SelectResult = Default::default();
     for (ix, rowx) in rows.iter().enumerate() {
         let cols = rowx.columns();
-        let mut row: Vec<DbValue> = Default::default();
-        row.reserve(cols.len());
+        let mut row: Vec<DbValue> = Vec::with_capacity(cols.len());
         for (i, col) in cols.iter().enumerate() {
             let col_name = col.name();
             if ix == 0 {
