@@ -1,4 +1,4 @@
-use qxsqld::{sql::{sql_exec, sql_exec_transaction, sql_select, DbValue, QueryAndParams, QueryAndParamsList, RecChng}, sql_utils::SqlOperation};
+use crate::{sql::{sql_exec, sql_exec_transaction, sql_select, DbValue, QueryAndParams, QueryAndParamsList, RecChng}, sql_utils::SqlOperation};
 use shvclient::appnodes::DotAppNode;
 use shvrpc::{rpcmessage::{RpcError, RpcErrorCode}, RpcMessage};
 use sqlx::postgres::PgPoolOptions;
@@ -13,6 +13,9 @@ use simple_logger::SimpleLogger;
 use shvproto::{to_rpcvalue, FromRpcValue, RpcValue, ToRpcValue};
 use url::Url;
 
+mod sql_utils;
+mod config;
+mod sql;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -42,7 +45,7 @@ struct Opts {
     verbose: Option<String>,
 }
 
-type State = RwLock<qxsqld::sql::DbPool>;
+type State = RwLock<crate::sql::DbPool>;
 
 fn init_logger(cli_opts: &Opts) {
     let mut logger = SimpleLogger::new();
@@ -75,7 +78,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
         let f = std::fs::File::open(config_path)?;
         serde_yaml::from_reader(f)?
     } else {
-        qxsqld::config::Config::default()
+        crate::config::Config::default()
     };
 
     if let Some(url) = cli_opts.url {
@@ -101,9 +104,9 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
     // info!("Heart beat interval: {:?}", client_config.heartbeat_interval);
     info!("Connecting to app database: {}", config.db.url);
     let db = if config.db.url.scheme() == "sqlite" {
-        qxsqld::sql::DbPool::Sqlite(SqlitePoolOptions::new().connect(config.db.url.as_str()).await?)
+        crate::sql::DbPool::Sqlite(SqlitePoolOptions::new().connect(config.db.url.as_str()).await?)
     } else {
-        qxsqld::sql::DbPool::Postgres(PgPoolOptions::new().connect(config.db.url.as_str()).await?)
+        crate::sql::DbPool::Postgres(PgPoolOptions::new().connect(config.db.url.as_str()).await?)
     };
 
     let app_state = AppState::new(RwLock::new(db));

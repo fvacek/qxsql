@@ -79,7 +79,8 @@ pub struct QueryAndParams(
 );
 
 impl QueryAndParams {
-    pub fn new(query: String, params: HashMap<String, DbValue>, issuer: Option<&str>) -> Self {
+#[cfg(test)]
+pub fn new(query: String, params: HashMap<String, DbValue>, issuer: Option<&str>) -> Self {
         QueryAndParams(query, params, issuer.map(|s| s.to_string()))
     }
 
@@ -91,10 +92,12 @@ impl QueryAndParams {
         &self.1
     }
 
+    #[cfg(test)]
     pub fn query_mut(&mut self) -> &mut String {
         &mut self.0
     }
 
+    #[cfg(test)]
     pub fn params_mut(&mut self) -> &mut HashMap<String, DbValue> {
         &mut self.1
     }
