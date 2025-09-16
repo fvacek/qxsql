@@ -154,7 +154,7 @@ pub async fn sql_select(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<S
 pub struct RecChng {
     pub table: String,
     pub id: i64,
-    pub record: HashMap<String, DbValue>,
+    pub record: Option<HashMap<String, DbValue>>,
     pub issuer: String,
 }
 

@@ -135,18 +135,40 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                 tokio::task::spawn(async move {
                     let state = app_state.read().await;
                     let result = sql_exec(&state, &query).await;
-                    let signal = match result {
+                    let recchng = match result {
                         Ok(result) => {
                             resp.set_result(to_rpcvalue(&result).expect("serde should work"));
                             if let Some(sql_info) = result.info {
-                                if sql_info.operation == SqlOperation::Insert {
-                                    let id = result.insert_id;
-                                    let rec = query.params();
-                                    Some((sql_info, id, rec))
-                                } else {
-                                    let id = if let Some(DbValue::Int(id)) = query.params().get("id") { *id } else { 0 };
-                                    let rec = query.params();
-                                    Some((sql_info, id, rec))
+                                match sql_info.operation {
+                                    SqlOperation::Insert => {
+                                        let record = query.params().clone();
+                                        Some(RecChng {
+                                            table: sql_info.table_name,
+                                            id: result.insert_id,
+                                            record: Some(record),
+                                            issuer: query.issuer().unwrap_or_default().to_string(),
+                                        })
+                                    }
+                                    SqlOperation::Update => {
+                                        let id = if let Some(DbValue::Int(id)) = query.params().get("id") { *id } else { 0 };
+                                        let mut record = query.params().clone();
+                                        record.remove("id");
+                                        Some(RecChng {
+                                            table: sql_info.table_name,
+                                            id,
+                                            record: Some(record),
+                                            issuer: query.issuer().unwrap_or_default().to_string(),
+                                        })
+                                    }
+                                    SqlOperation::Delete => {
+                                        let id = if let Some(DbValue::Int(id)) = query.params().get("id") { *id } else { 0 };
+                                        Some(RecChng {
+                                            table: sql_info.table_name,
+                                            id,
+                                            record: None,
+                                            issuer: query.issuer().unwrap_or_default().to_string(),
+                                        })
+                                    }
                                 }
                             } else {
                                 None
@@ -160,8 +182,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                     if let Err(e) = client_cmd_tx.send_message(resp) {
                         error!("sql_exec: Cannot send response ({e})");
                     }
-                    if let Some((info, id, rec)) = signal && let Some(issuer) = query.issuer() {
-                        let recchng = RecChng {table:info.table_name,id,record:rec.clone(), issuer: issuer.to_string() };
+                    if let Some(recchng) = recchng {
                         match to_rpcvalue(&recchng) {
                             Ok(rv) => {
                                 let msg = RpcMessage::new_signal("sql", "recchng", Some(rv));
