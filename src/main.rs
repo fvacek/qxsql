@@ -226,6 +226,9 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                                             issuer: query.issuer().unwrap_or_default().to_string(),
                                         })
                                     }
+                                    SqlOperation::Other(_) => {
+                                        None
+                                    }
                                 }
                             } else {
                                 None

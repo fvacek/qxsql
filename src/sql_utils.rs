@@ -119,6 +119,7 @@ pub enum SqlOperation {
     Insert,
     Update,
     Delete,
+    Other(String)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -145,7 +146,7 @@ pub fn parse_sql_info(sql: &str) -> Result<SqlInfo, String> {
         "INSERT" => SqlOperation::Insert,
         "UPDATE" => SqlOperation::Update,
         "DELETE" => SqlOperation::Delete,
-        _ => return Err(format!("Unsupported SQL operation: {}", parts[0])),
+        o => SqlOperation::Other(o.to_string()),
     };
 
     let table_name = match operation {
@@ -180,23 +181,28 @@ pub fn parse_sql_info(sql: &str) -> Result<SqlInfo, String> {
             }
             parts[1].to_string()
         },
+        SqlOperation::Other(_) => {
+            // For other operations, do nothing
+            "".to_string()
+        }
     };
 
     // Check for RETURNING id clause (only relevant for INSERT)
     let returning_id = match operation {
         SqlOperation::Insert => {
-            // Check if the statement ends with "RETURNING id" (case insensitive, ignoring whitespace)
-            let sql_upper = sql.to_uppercase();
-            let trimmed = sql_upper.trim_end();
+                // Check if the statement ends with "RETURNING id" (case insensitive, ignoring whitespace)
+                let sql_upper = sql.to_uppercase();
+                let trimmed = sql_upper.trim_end();
 
-            // Split by whitespace and check if the last two tokens are "RETURNING" and "ID"
-            let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-            tokens.len() >= 2
-                && tokens[tokens.len() - 2] == "RETURNING"
-                && tokens[tokens.len() - 1] == "ID"
-        },
-        SqlOperation::Delete => false, // DELETE doesn't support RETURNING id in this context
-        SqlOperation::Update => false, // UPDATE doesn't support RETURNING id in this context
+                // Split by whitespace and check if the last two tokens are "RETURNING" and "ID"
+                let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+                tokens.len() >= 2
+                    && tokens[tokens.len() - 2] == "RETURNING"
+                    && tokens[tokens.len() - 1] == "ID"
+            },
+        SqlOperation::Delete => false,
+        SqlOperation::Update => false,
+        SqlOperation::Other(_) => false,
     };
 
     Ok(SqlInfo {

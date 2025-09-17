@@ -751,8 +751,8 @@ mod tests {
         assert!(parse_sql_info("   ").is_err());
 
         // Unsupported operations
-        assert!(parse_sql_info("SELECT * FROM users").is_err());
-        assert!(parse_sql_info("CREATE TABLE users").is_err());
+        assert_eq!(parse_sql_info("SELECT * FROM users").unwrap().operation, SqlOperation::Other("SELECT".to_string()));
+        assert_eq!(parse_sql_info("CREATE TABLE users").unwrap().operation, SqlOperation::Other("CREATE".to_string()));
 
         // DELETE operations are supported
         assert!(parse_sql_info("DELETE FROM users").is_ok());
@@ -882,6 +882,9 @@ mod tests {
                 SqlOperation::Delete => {
                     assert!(sql.to_uppercase().starts_with("DELETE"));
                 },
+                SqlOperation::Other(op) => {
+                    panic!("Unexpected operation {}", op);
+                },
             }
             assert!(!info.table_name.is_empty());
         }
@@ -958,86 +961,96 @@ mod tests {
 
     #[test]
     fn test_parse_sql_info_returning_id_practical_usage() {
-        // Practical example: routing INSERT queries based on returning_id flag
-        let queries = vec![
-            ("INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')", false),
-            ("INSERT INTO users (name, email) VALUES ('Bob', 'bob@example.com') RETURNING id", true),
-            ("INSERT INTO orders (user_id, total) VALUES (1, 99.99) returning id", true),
-            ("UPDATE users SET last_login = NOW() WHERE id = 1", false),
-            ("INSERT INTO logs (message) VALUES ('System started') RETURNING ID", true),
-        ];
+            // Practical example: routing INSERT queries based on returning_id flag
+            let queries = vec![
+                ("INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')", false),
+                ("INSERT INTO users (name, email) VALUES ('Bob', 'bob@example.com') RETURNING id", true),
+                ("INSERT INTO orders (user_id, total) VALUES (1, 99.99) returning id", true),
+                ("UPDATE users SET last_login = NOW() WHERE id = 1", false),
+                ("INSERT INTO logs (message) VALUES ('System started') RETURNING ID", true),
+            ];
 
-        for (sql, expected_returning_id) in queries {
-            let info = parse_sql_info(sql).unwrap();
-            assert_eq!(info.is_returning_id, expected_returning_id, "Failed for SQL: {}", sql);
+            for (sql, expected_returning_id) in queries {
+                let info = parse_sql_info(sql).unwrap();
+                assert_eq!(info.is_returning_id, expected_returning_id, "Failed for SQL: {}", sql);
 
-            // Demonstrate practical usage
-            match info {
-                SqlInfo { operation: SqlOperation::Insert, is_returning_id: true, table_name } => {
-                    // This query expects an ID to be returned - route to special handler
-                    println!("INSERT with RETURNING id on table '{}' - will return generated ID", table_name);
-                },
-                SqlInfo { operation: SqlOperation::Insert, is_returning_id: false, table_name } => {
-                    // Regular INSERT - route to standard handler
-                    println!("Regular INSERT on table '{}' - no ID expected", table_name);
-                },
-                SqlInfo { operation: SqlOperation::Update, table_name, .. } => {
-                    // UPDATE operations
-                    println!("UPDATE on table '{}' - returning_id is always false for updates", table_name);
-                },
-                SqlInfo { operation: SqlOperation::Delete, table_name, .. } => {
-                    // DELETE operations
-                    println!("DELETE on table '{}' - returning_id is always false for deletes", table_name);
-                },
-            }
-        }
-    }
-
-    #[test]
-    fn test_parse_sql_info_api_demonstration() {
-        // Demonstrate the public API usage
-
-        // Basic usage
-        let sql = "INSERT INTO customers (name, email) VALUES ('Alice', 'alice@example.com')";
-        match parse_sql_info(sql) {
-            Ok(SqlInfo { operation: SqlOperation::Insert, table_name, is_returning_id: returning_id }) => {
-                println!("INSERT operation on table: {}", table_name);
-                assert_eq!(table_name, "customers");
-                assert_eq!(returning_id, false);
-            },
-            Ok(SqlInfo { operation: SqlOperation::Update, table_name, is_returning_id: returning_id }) => {
-                println!("UPDATE operation on table: {}", table_name);
-                assert_eq!(returning_id, false);
-            },
-            Ok(SqlInfo { operation: SqlOperation::Delete, table_name, is_returning_id: returning_id }) => {
-                println!("DELETE operation on table: {}", table_name);
-                assert_eq!(returning_id, false);
-            },
-            Err(e) => panic!("Parse error: {}", e),
-        }
-
-        // Pattern matching usage
-        let statements = vec![
-            "INSERT INTO logs (message) VALUES ('System started')",
-            "UPDATE users SET last_login = NOW() WHERE id = 123",
-            "DELETE FROM old_records WHERE created_at < '2023-01-01'",
-            "insert into products (name, price) values ('Widget', 9.99)",
-        ];
-
-        for stmt in statements {
-            if let Ok(info) = parse_sql_info(stmt) {
-                match info.operation {
-                    SqlOperation::Insert => {
-                        println!("Will insert into table: {}", info.table_name);
+                // Demonstrate practical usage
+                match info {
+                    SqlInfo { operation: SqlOperation::Insert, is_returning_id: true, table_name } => {
+                        // This query expects an ID to be returned - route to special handler
+                        println!("INSERT with RETURNING id on table '{}' - will return generated ID", table_name);
                     },
-                    SqlOperation::Update => {
-                        println!("Will update table: {}", info.table_name);
+                    SqlInfo { operation: SqlOperation::Insert, is_returning_id: false, table_name } => {
+                        // Regular INSERT - route to standard handler
+                        println!("Regular INSERT on table '{}' - no ID expected", table_name);
                     },
-                    SqlOperation::Delete => {
-                        println!("Will delete from table: {}", info.table_name);
+                    SqlInfo { operation: SqlOperation::Update, table_name, .. } => {
+                        // UPDATE operations
+                        println!("UPDATE on table '{}' - returning_id is always false for updates", table_name);
+                    },
+                    SqlInfo { operation: SqlOperation::Delete, table_name, .. } => {
+                        // DELETE operations
+                        println!("DELETE on table '{}' - returning_id is always false for deletes", table_name);
+                    },
+                    SqlInfo { operation: SqlOperation::Other(_), table_name, .. } => {
+                        // Other operations
+                        println!("Other operation on table '{}'", table_name);
                     },
                 }
             }
         }
-    }
+
+    #[test]
+    fn test_parse_sql_info_api_demonstration() {
+            // Demonstrate the public API usage
+
+            // Basic usage
+            let sql = "INSERT INTO customers (name, email) VALUES ('Alice', 'alice@example.com')";
+            match parse_sql_info(sql) {
+                Ok(SqlInfo { operation: SqlOperation::Insert, table_name, is_returning_id: returning_id }) => {
+                    println!("INSERT operation on table: {}", table_name);
+                    assert_eq!(table_name, "customers");
+                    assert_eq!(returning_id, false);
+                },
+                Ok(SqlInfo { operation: SqlOperation::Update, table_name, is_returning_id: returning_id }) => {
+                    println!("UPDATE operation on table: {}", table_name);
+                    assert_eq!(returning_id, false);
+                },
+                Ok(SqlInfo { operation: SqlOperation::Delete, table_name, is_returning_id: returning_id }) => {
+                    println!("DELETE operation on table: {}", table_name);
+                    assert_eq!(returning_id, false);
+                },
+                Ok(SqlInfo { operation: SqlOperation::Other(_), .. }) => {
+                    panic!("Unexpected operation type");
+                },
+                Err(e) => panic!("Parse error: {}", e),
+            }
+
+            // Pattern matching usage
+            let statements = vec![
+                "INSERT INTO logs (message) VALUES ('System started')",
+                "UPDATE users SET last_login = NOW() WHERE id = 123",
+                "DELETE FROM old_records WHERE created_at < '2023-01-01'",
+                "insert into products (name, price) values ('Widget', 9.99)",
+            ];
+
+            for stmt in statements {
+                if let Ok(info) = parse_sql_info(stmt) {
+                    match info.operation {
+                        SqlOperation::Insert => {
+                            println!("Will insert into table: {}", info.table_name);
+                        },
+                        SqlOperation::Update => {
+                            println!("Will update table: {}", info.table_name);
+                        },
+                        SqlOperation::Delete => {
+                            println!("Will delete from table: {}", info.table_name);
+                        },
+                        SqlOperation::Other(_) => {
+                            println!("Other operation on table: {}", info.table_name);
+                        },
+                    }
+                }
+            }
+        }
 }
