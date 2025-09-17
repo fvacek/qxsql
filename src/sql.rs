@@ -8,7 +8,7 @@ use shvproto::{from_rpcvalue, RpcValue};
 use sqlx::prelude::FromRow;
 use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 
 use crate::sql_utils::{self, parse_rfc3339_datetime, postgres_query_positional_args_from_sqlite, SqlInfo};
 
@@ -134,11 +134,11 @@ pub struct DbField {
     pub name: String,
 }
 
-#[derive(Debug, Serialize,Deserialize, Default)]
+#[derive(Debug, Serialize,Deserialize)]
 pub struct ExecResult {
     pub rows_affected: i64,
     pub insert_id: i64,
-    pub info: Option<SqlInfo>
+    pub info: SqlInfo
 }
 #[derive(Debug, Serialize,Deserialize, Default, PartialEq)]
 pub struct SelectResult {
@@ -197,29 +197,22 @@ macro_rules! bind_db_values {
 }
 
 // Common logic for SQL execution
-fn parse_sql_info_if_needed(query: &QueryAndParams) -> Option<SqlInfo> {
-    if query.issuer().is_some() {
-        match crate::sql_utils::parse_sql_info(query.query()) {
-            Ok(sql_info) => {
-                Some(sql_info)
-            },
-            Err(e) => {
-                error!("sql_exec: parse SQL query error: {}", e);
-                None
-            }
+fn parse_sql_info(query: &QueryAndParams) -> anyhow::Result<SqlInfo> {
+    match crate::sql_utils::parse_sql_info(query.query()) {
+        Ok(sql_info) => {
+            Ok(sql_info)
+        },
+        Err(e) => {
+            bail!("sql_exec: parse SQL query error: {}", e)
         }
-    } else {
-        None
     }
 }
 
 macro_rules! sql_exec_impl {
     ($db_pool:expr, $query:expr) => {{
         let sql = prepare_sql_with_params($query);
-        let info = parse_sql_info_if_needed($query);
-
-        let is_returning_id = if let Some(info) = &info && info.is_returning_id { true } else { false };
-        if is_returning_id {
+        let info = parse_sql_info($query)?;
+        if info.is_returning_id {
             let insert_id: i64 = sqlx::query_scalar(&sql)
                 .fetch_one($db_pool).await.map_err(sqlx2_to_anyhow)?;
             Ok(ExecResult { rows_affected: 1, insert_id, info })

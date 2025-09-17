@@ -36,6 +36,10 @@ struct Opts {
     #[arg(short, long)]
     database: Option<String>,
 
+    /// Database connection string
+    #[arg(short, long)]
+    write_database_token: Option<String>,
+
     /// Print effective config
     #[arg(long)]
     print_config: bool,
@@ -116,6 +120,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
     //     tokio::task::spawn(emit_chng_task(client_cmd_tx, client_evt_rx, app_state));
     // };
 
+    let write_database_token = cli_opts.write_database_token.clone();
     let sql_node = shvclient::fixed_node!(
         sql_handler<State>(request, client_cmd_tx, app_state) {
             "select" [None, Read, "[s:query,{s|i|b|t|n}:params]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParams) => {
@@ -135,18 +140,23 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
             }
             "exec" [None, Read, "[s:query,{s|i|b|t|n}:params,s|n:issuer]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParams) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
+                let user_id = request.user_id().map(|id| id.to_string());
+                let is_authorized = write_database_token.isNone();
+                if !is_authorized {
+                    return Some(Err(RpcError::new(RpcErrorCode::PermissionDenied, "Unauthorized")));
+                }
                 tokio::task::spawn(async move {
                     let state = app_state.read().await;
                     let result = sql_exec(&state, &query).await;
                     let recchng = match result {
                         Ok(result) => {
                             resp.set_result(to_rpcvalue(&result).expect("serde should work"));
-                            if let Some(sql_info) = result.info {
-                                match sql_info.operation {
+                            if query.issuer().is_some() {
+                                match result.info.operation {
                                     SqlOperation::Insert => {
                                         let record = query.params().clone();
                                         Some(RecChng {
-                                            table: sql_info.table_name,
+                                            table: result.info.table_name,
                                             id: result.insert_id,
                                             record: Some(record),
                                             issuer: query.issuer().unwrap_or_default().to_string(),
@@ -157,7 +167,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                                         let mut record = query.params().clone();
                                         record.remove("id");
                                         Some(RecChng {
-                                            table: sql_info.table_name,
+                                            table: result.info.table_name,
                                             id,
                                             record: Some(record),
                                             issuer: query.issuer().unwrap_or_default().to_string(),
@@ -166,7 +176,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                                     SqlOperation::Delete => {
                                         let id = if let Some(DbValue::Int(id)) = query.params().get("id") { *id } else { 0 };
                                         Some(RecChng {
-                                            table: sql_info.table_name,
+                                            table: result.info.table_name,
                                             id,
                                             record: None,
                                             issuer: query.issuer().unwrap_or_default().to_string(),
