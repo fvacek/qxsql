@@ -1,21 +1,57 @@
-use crate::{sql::{sql_exec, sql_exec_transaction, sql_select, DbValue, QueryAndParams, QueryAndParamsList, RecChng}, sql_utils::SqlOperation};
+use crate::{
+    sql::{
+        DbValue, QueryAndParams, QueryAndParamsList, RecChng, sql_exec, sql_exec_transaction,
+        sql_select,
+    },
+    sql_utils::SqlOperation,
+};
 use shvclient::appnodes::DotAppNode;
-use shvrpc::{rpcmessage::{RpcError, RpcErrorCode}, RpcMessage};
+use shvrpc::RpcMessageMetaTags;
+use shvrpc::{
+    RpcMessage,
+    rpcmessage::{RpcError, RpcErrorCode},
+};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::sqlite::SqlitePoolOptions;
+use std::sync::OnceLock;
 use tokio::sync::RwLock;
 
 use clap::Parser;
 use log::*;
-use shvrpc::util::parse_log_verbosity;
 use shvclient::AppState;
+use shvproto::{FromRpcValue, RpcValue, ToRpcValue, to_rpcvalue};
+use shvrpc::util::parse_log_verbosity;
 use simple_logger::SimpleLogger;
-use shvproto::{to_rpcvalue, FromRpcValue, RpcValue, ToRpcValue};
 use url::Url;
 
-mod sql_utils;
 mod config;
 mod sql;
+mod sql_utils;
+
+// Global configuration for database access control
+#[derive(Debug)]
+struct GlobalConfig {
+    write_database_token: Option<String>,
+}
+
+static GLOBAL_CONFIG: OnceLock<GlobalConfig> = OnceLock::new();
+
+fn check_write_authorization(request: &shvrpc::RpcMessage) -> Result<(), RpcError> {
+    let config = GLOBAL_CONFIG
+        .get()
+        .expect("Global config should be initialized");
+    if let Some(write_token) = &config.write_database_token {
+        if let Some(user_id) = request.user_id()
+            && let Some(user_token) = user_id.split(';').next()
+            && user_token != write_token
+        {
+            return Ok(());
+        }
+
+        return Err(RpcError::new( RpcErrorCode::PermissionDenied, "Unauthorized", ));
+    }
+    Ok(())
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -98,7 +134,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
     if cli_opts.print_config {
         let yaml = serde_yaml::to_string(&config)?;
         println!("{}", yaml);
-        return Ok(())
+        return Ok(());
     }
 
     log::info!("=====================================================");
@@ -108,7 +144,11 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
     // info!("Heart beat interval: {:?}", client_config.heartbeat_interval);
     info!("Connecting to app database: {}", config.db.url);
     let db = if config.db.url.scheme() == "sqlite" {
-        crate::sql::DbPool::Sqlite(SqlitePoolOptions::new().connect(config.db.url.as_str()).await?)
+        crate::sql::DbPool::Sqlite(
+            SqlitePoolOptions::new()
+                .connect(config.db.url.as_str())
+                .await?,
+        )
     } else {
         crate::sql::DbPool::Postgres(PgPoolOptions::new().connect(config.db.url.as_str()).await?)
     };
@@ -120,7 +160,13 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
     //     tokio::task::spawn(emit_chng_task(client_cmd_tx, client_evt_rx, app_state));
     // };
 
-    let write_database_token = cli_opts.write_database_token.clone();
+    // Initialize global configuration
+    GLOBAL_CONFIG
+        .set(GlobalConfig {
+            write_database_token: cli_opts.write_database_token.clone(),
+        })
+        .expect("Global config should only be set once");
+
     let sql_node = shvclient::fixed_node!(
         sql_handler<State>(request, client_cmd_tx, app_state) {
             "select" [None, Read, "[s:query,{s|i|b|t|n}:params]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParams) => {
@@ -140,10 +186,8 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
             }
             "exec" [None, Read, "[s:query,{s|i|b|t|n}:params,s|n:issuer]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParams) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
-                let user_id = request.user_id().map(|id| id.to_string());
-                let is_authorized = write_database_token.isNone();
-                if !is_authorized {
-                    return Some(Err(RpcError::new(RpcErrorCode::PermissionDenied, "Unauthorized")));
+                if let Err(auth_error) = check_write_authorization(&request) {
+                    return Some(Err(auth_error));
                 }
                 tokio::task::spawn(async move {
                     let state = app_state.read().await;
@@ -213,6 +257,9 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
             }
             "transaction" [None, Read, "[s:query,[[s|i|b|t|n]]:params]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParamsList) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
+                if let Err(auth_error) = check_write_authorization(&request) {
+                    return Some(Err(auth_error));
+                }
                 tokio::task::spawn(async move {
                     let state = app_state.read().await;
                     let result = sql_exec_transaction(&state, &query).await;
