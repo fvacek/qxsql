@@ -382,7 +382,7 @@ mod tests {
 
     async fn test_sql_select_with_db(db_pool: DbPool) {
         let qp = QueryAndParams(
-            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, created TEXT)".into(),
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT, age INTEGER, created TEXT)".into(),
             HashMap::new(),
             None
         );
@@ -391,7 +391,7 @@ mod tests {
 
         let dt = DbValue::DateTime(parse_rfc3339_datetime("2025-09-12T15:04:05Z").unwrap());
         let qp = QueryAndParams(
-            "INSERT INTO users (id, name, created) VALUES (:id, :name, :created)".into(),
+            "INSERT INTO users (id, name, email, created) VALUES (:id, :name, :name, :created)".into(),
             [ ("id".to_string(), 1.into()), ("name".to_string(), "Jane Doe".into()), ("created".to_string(), dt.clone()), ].into_iter().collect(),
             None
         );
@@ -405,8 +405,14 @@ mod tests {
         );
         let result = sql_select(&db_pool, &qp).await;
         let expected = SelectResult {
-            fields: vec![DbField { name: "id".to_string() }, DbField { name: "name".to_string() }, DbField { name: "created".to_string() }],
-            rows: vec![vec![1.into(), "Jane Doe".into(), dt]],
+            fields: vec![
+                DbField { name: "id".to_string() },
+                DbField { name: "name".to_string() },
+                DbField { name: "email".to_string() },
+                DbField { name: "age".to_string() },
+                DbField { name: "created".to_string() },
+            ],
+            rows: vec![vec![1.into(), "Jane Doe".into(), "Jane Doe".into(), DbValue::Null, dt]],
         };
         assert_eq!(result.unwrap(), expected);
     }
