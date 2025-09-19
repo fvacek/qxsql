@@ -1,7 +1,7 @@
 use std::backtrace::Backtrace;
 use std::collections::HashMap;
 
-use chrono::Utc;
+use chrono::{Utc};
 use log::error;
 use serde::{Deserialize, Serialize};
 use shvproto::{from_rpcvalue, RpcValue};
@@ -308,6 +308,7 @@ fn sqlx2_to_anyhow(err: sqlx::Error) -> anyhow::Error {
 
 // Helper function to determine if a type is text-based
 fn is_text_type(type_name: &str) -> bool {
+    type_name.contains("NAME") ||
     type_name.contains("TEXT") ||
     type_name.contains("STRING") ||
     type_name.contains("VARCHAR")
@@ -344,14 +345,16 @@ fn db_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<DbVal
 
     if is_text_type(&type_name) {
         let s = <String as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?;
-        // 2025-09-12T15:04:05Z
-        if s.len() > 18 && s.as_bytes()[10] == b'T' && let Some(dt) = parse_rfc3339_datetime(&s) {
-            Ok(DbValue::DateTime(dt))
-        } else {
-            Ok(DbValue::String(s))
-        }
+        Ok(DbValue::String(s))
     } else if type_name.contains("INT") {
         Ok(DbValue::Int(<i64 as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
+    } else if type_name.contains("TIMESTAMP") {
+        let s = <String as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?;
+        if let Some(dt) = parse_rfc3339_datetime(&s) {
+            Ok(DbValue::DateTime(dt))
+        } else {
+            anyhow::bail!("Failed to parse timestamp: {}", s);
+        }
     } else if type_name.contains("BOOL") {
         Ok(DbValue::Bool(<bool as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
     } else {
@@ -429,20 +432,25 @@ mod tests {
                 .connect(&db_url)
                 .await
                 .unwrap());
-            let _ = match &db_pool {
+            match &db_pool {
                 DbPool::Postgres(pool) => {
-                    let qp = QueryAndParams(
-                        "DROP TABLE IF EXISTS users".into(),
-                        HashMap::new(),
-                        None
-                    );
-                    sql_exec_postgres(pool, &qp).await
+                    // doesn't work, possibly because of db connection pool
+                    // let qp = QueryAndParams( "SET search_path TO opublic".into(), HashMap::new(), None );
+                    // let result = sql_exec_postgres(pool, &qp).await.unwrap();
+                    // println!("result1: {:?}", result);
+
+                    // let qp = QueryAndParams( "SHOW search_path".into(), Default::default(), None );
+                    // let result = sql_select_postgres(pool, &qp).await.unwrap();
+                    // println!("result2: {:?}", result);
+                    let qp = QueryAndParams( "DROP TABLE IF EXISTS users".into(), HashMap::new(), None );
+                    let result = sql_exec_postgres(pool, &qp).await.unwrap();
+                    println!("result3: {:?}", result);
                 },
                 _ => panic!("not a postgres pool"),
             };
             test_sql_select_with_db(db_pool).await;
         } else {
-            warn!(r#"export QXSQLD_POSTGRES_URL= "postgres://myuser:mypassword@localhost/mydb?options=--search_path%3Dmy_app_schema""#);
+            warn!(r#"export QXSQLD_POSTGRES_URL= "postgres://myuser:mypassword@localhost/mydb?options=--search_path%3Dpublic""#);
             warn!("Skipping postgres test, QXSQLD_POSTGRES_URL not set");
         }
     }
