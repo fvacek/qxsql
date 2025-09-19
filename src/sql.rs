@@ -323,12 +323,7 @@ fn db_value_from_sqlite_row(row: &SqliteRow, index: usize) -> anyhow::Result<DbV
     }
 
     if is_text_type(&type_name) {
-        let s = <String as sqlx::decode::Decode<Sqlite>>::decode(raw_val).map_err(sqlx_to_anyhow)?;
-        if s.len() > 18 && s.as_bytes()[10] == b'T' && let Some(dt) = parse_rfc3339_datetime(&s) {
-            Ok(DbValue::DateTime(dt))
-        } else {
-            Ok(DbValue::String(s))
-        }
+        Ok(DbValue::String(<String as sqlx::decode::Decode<Sqlite>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
     } else if type_name.contains("INT") {
         Ok(DbValue::Int(<i64 as sqlx::decode::Decode<Sqlite>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
     } else if type_name.contains("BOOL") {
@@ -389,7 +384,8 @@ mod tests {
         let res = sql_exec(&db_pool, &qp).await;
         res.unwrap();
 
-        let dt = DbValue::DateTime(parse_rfc3339_datetime("2025-09-12T15:04:05Z").unwrap());
+        let dt_str = "2025-09-12T15:04:05+00:00";
+        let dt = DbValue::DateTime(parse_rfc3339_datetime(dt_str).unwrap());
         let qp = QueryAndParams(
             "INSERT INTO users (id, name, email, created) VALUES (:id, :name, :name, :created)".into(),
             [ ("id".to_string(), 1.into()), ("name".to_string(), "Jane Doe".into()), ("created".to_string(), dt.clone()), ].into_iter().collect(),
@@ -412,7 +408,7 @@ mod tests {
                 DbField { name: "age".to_string() },
                 DbField { name: "created".to_string() },
             ],
-            rows: vec![vec![1.into(), "Jane Doe".into(), "Jane Doe".into(), DbValue::Null, dt]],
+            rows: vec![vec![1.into(), "Jane Doe".into(), "Jane Doe".into(), DbValue::Null, dt_str.into()]],
         };
         assert_eq!(result.unwrap(), expected);
     }
