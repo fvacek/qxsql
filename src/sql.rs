@@ -175,8 +175,9 @@ pub async fn sql_exec_transaction(db: &DbPool, query: &QueryAndParamsList) -> an
     }
 }
 
-fn prepare_sql_with_params(query: &QueryAndParams) -> String {
-    sql_utils::replace_params(query.query(), query.params())
+fn prepare_sql_with_params(query: &QueryAndParams, repl_char: char) -> String {
+    let keys = query.params().keys().map(|s| s.as_str()).collect::<Vec<_>>();
+    sql_utils::replace_named_with_positional_params(query.query(), &keys, repl_char)
 }
 
 // Helper macro to bind parameters to a query - eliminates duplication in transactions
@@ -209,15 +210,16 @@ fn parse_sql_info(query: &QueryAndParams) -> anyhow::Result<SqlInfo> {
 }
 
 macro_rules! sql_exec_impl {
-    ($db_pool:expr, $query:expr) => {{
-        let sql = prepare_sql_with_params($query);
+    ($db_pool:expr, $query:expr, $repl_char:expr) => {{
+        let sql = prepare_sql_with_params($query, $repl_char);
+        let q = sqlx::query(&sql);
+        let q = bind_db_values!(q, $query.params().values());
         let info = parse_sql_info($query)?;
         if info.is_returning_id {
-            let insert_id: i64 = sqlx::query_scalar(&sql)
-                .fetch_one($db_pool).await.map_err(sqlx2_to_anyhow)?;
+            let row = q.fetch_one($db_pool).await.map_err(sqlx2_to_anyhow)?;
+            let insert_id = row.get(0);
             Ok(ExecResult { rows_affected: 1, insert_id, info })
         } else {
-            let q = sqlx::query(&sql);
             let result = q.execute($db_pool).await?;
             Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: 0, info })
         }
@@ -225,11 +227,12 @@ macro_rules! sql_exec_impl {
 }
 
 async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
-    sql_exec_impl!(db_pool, query)
+    sql_exec_impl!(db_pool, query, '?')
+
 }
 
 async fn sql_exec_postgres(db_pool: &Pool<Postgres>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
-    sql_exec_impl!(db_pool, query)
+    sql_exec_impl!(db_pool, query, '$')
 }
 
 async fn sql_exec_transaction_sqlite(db_pool: &Pool<Sqlite>, query_list: &QueryAndParamsList) -> anyhow::Result<()> {
@@ -278,15 +281,17 @@ where
 }
 
 async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyhow::Result<SelectResult> {
-    let sql = prepare_sql_with_params(query);
+    let sql = prepare_sql_with_params(query, '?');
     let q = sqlx::query(&sql);
+    let q = bind_db_values!(q, query.params().values());
     let rows = q.fetch_all(db_pool).await?;
     process_rows(&rows, db_value_from_sqlite_row)
 }
 
 async fn sql_select_postgres(db_pool: &Pool<Postgres>, query: &QueryAndParams) -> anyhow::Result<SelectResult> {
-    let sql = prepare_sql_with_params(query);
+    let sql = prepare_sql_with_params(query, '$');
     let q = sqlx::query(&sql);
+    let q = bind_db_values!(q, query.params().values());
     let rows = q.fetch_all(db_pool).await?;
     process_rows(&rows, db_value_from_postgres_row)
 }

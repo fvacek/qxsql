@@ -1,112 +1,5 @@
-use std::collections::HashMap;
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-
-use crate::sql::DbValue;
-
-/// Trait for types that can provide parameter lookups
-pub(crate) trait ParamLookup {
-    fn get_param(&self, key: &str) -> Option<&DbValue>;
-}
-
-impl ParamLookup for HashMap<String, DbValue> {
-    fn get_param(&self, key: &str) -> Option<&DbValue> {
-        self.get(key)
-    }
-}
-
-impl ParamLookup for &HashMap<String, DbValue> {
-    fn get_param(&self, key: &str) -> Option<&DbValue> {
-        self.get(key)
-    }
-}
-
-impl ParamLookup for &[(&str, DbValue)] {
-    fn get_param(&self, key: &str) -> Option<&DbValue> {
-        self.iter().find(|(k, _)| *k == key).map(|(_, v)| v)
-    }
-}
-
-/// Replaces `:key` patterns in the input string with values from the lookup,
-/// ignoring any `:key` inside single quotes.
-pub(crate) fn replace_params<P>(input: &str, values: P) -> String
-where
-    P: ParamLookup,
-{
-    let mut output = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    let mut in_single_quote = false;
-
-    while let Some(c) = chars.next() {
-        match c {
-            '\'' => {
-                in_single_quote = !in_single_quote;
-                output.push(c);
-            }
-            ':' if !in_single_quote => {
-                let mut key = String::new();
-                while let Some(&next) = chars.peek() {
-                    if next.is_alphanumeric() || next == '_' {
-                        key.push(chars.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-
-                if !key.is_empty() {
-                    if let Some(val) = values.get_param(&key) {
-                        match val {
-                            DbValue::String(s) => {
-                                output.push('\'');
-                                output.push_str(s);
-                                output.push('\'');
-                            }
-                            DbValue::Int(i) => output.push_str(&i.to_string()),
-                            DbValue::DateTime(dt) => {
-                                output.push('\'');
-                                output.push_str(&dt.to_rfc3339());
-                                output.push('\'');
-                            }
-                            DbValue::Bool(b) => output.push_str(if *b {"true"} else {"false"}),
-                            DbValue::Null => output.push_str("NULL"),
-                        }
-                    } else {
-                        output.push(':');
-                        output.push_str(&key);
-                    }
-                } else {
-                    output.push(':');
-                }
-            }
-            _ => output.push(c),
-        }
-    }
-
-    output
-}
-
-pub(crate) fn postgres_query_positional_args_from_sqlite(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    let mut param_counter = 1;
-    let mut in_single_quote = false;
-
-    for c in input.chars() {
-        match c {
-            '\'' => {
-                output.push(c);
-                in_single_quote = !in_single_quote;
-            }
-            '?' if !in_single_quote => {
-                output.push('$');
-                output.push_str(&param_counter.to_string());
-                param_counter += 1;
-            }
-            _ => output.push(c),
-        }
-    }
-    output
-}
 
 pub(crate) fn parse_rfc3339_datetime(s: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(s)
@@ -212,86 +105,172 @@ pub fn parse_sql_info(sql: &str) -> Result<SqlInfo, String> {
     })
 }
 
+/// Replaces named parameters (:key) in an SQL query with positional parameters (?n)
+/// where n is the 1-based index of the key in the provided list.
+/// Ignores occurrences of :key that are inside single quotes.
+///
+/// # Arguments
+/// * `keys` - A slice of string keys to search for in the query
+/// * `sql` - The SQL query string containing named parameters
+///
+/// # Returns
+/// A new String with named parameters replaced by positional parameters
+///
+/// # Examples
+/// ```
+/// use qxsqld::replace_named_with_positional_params;
+/// let keys = vec!["name", "age"];
+/// let sql = "SELECT * FROM users WHERE name = :name AND age > :age";
+/// let result = replace_named_with_positional_params(&keys, sql);
+/// assert_eq!(result, "SELECT * FROM users WHERE name = ?1 AND age > ?2");
+/// ```
+pub(crate) fn replace_named_with_positional_params(sql: &str, keys: &[&str], repl_char: char) -> String {
+    let mut result = String::with_capacity(sql.len());
+    let mut chars = sql.chars().peekable();
+    let mut in_single_quotes = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' => {
+                result.push(ch);
+                // Handle escaped single quotes ('')
+                if chars.peek() == Some(&'\'') {
+                    result.push(chars.next().unwrap()); // consume the second quote
+                } else {
+                    in_single_quotes = !in_single_quotes;
+                }
+            }
+            ':' if !in_single_quotes => {
+                // Check if this colon is followed by one of our keys
+                let remaining: String = chars.clone().collect();
+                let mut matched_key = None;
+                let mut matched_length = 0;
+
+                // Find the longest matching key to handle cases where one key is a prefix of another
+                for (index, &key) in keys.iter().enumerate() {
+                    if remaining.starts_with(key) {
+                        // Check that the key is followed by a non-alphanumeric character or end of string
+                        let next_char_pos = key.len();
+                        let is_word_boundary = match remaining.chars().nth(next_char_pos) {
+                            Some(c) => !c.is_alphanumeric() && c != '_',
+                            None => true,
+                        };
+
+                        if is_word_boundary && key.len() > matched_length {
+                            matched_key = Some((index + 1, key)); // 1-based index
+                            matched_length = key.len();
+                        }
+                    }
+                }
+
+                if let Some((param_number, key)) = matched_key {
+                    // Replace :key with ?n
+                    result.push_str(&format!("{repl_char}{}", param_number));
+                    // Skip the key characters
+                    for _ in 0..key.len() {
+                        chars.next();
+                    }
+                } else {
+                    // Not a matching key, just add the colon
+                    result.push(ch);
+                }
+            }
+            _ => {
+                result.push(ch);
+            }
+        }
+    }
+
+    result
+}
+
+pub(crate) fn postgres_query_positional_args_from_sqlite(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut param_counter = 1;
+    let mut in_single_quote = false;
+
+    for c in input.chars() {
+        match c {
+            '\'' => {
+                output.push(c);
+                in_single_quote = !in_single_quote;
+            }
+            '?' if !in_single_quote => {
+                output.push('$');
+                output.push_str(&param_counter.to_string());
+                param_counter += 1;
+            }
+            _ => output.push(c),
+        }
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_params(pairs: &[(&str, DbValue)]) -> HashMap<String, DbValue> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.clone()))
-            .collect()
+    #[test]
+    fn test_named_to_positional_basic_replacement() {
+        let keys = vec!["name", "age"];
+        let sql = "SELECT * FROM users WHERE name = :name AND age > :age";
+        let result = replace_named_with_positional_params(sql, &keys, '?');
+        assert_eq!(result, "SELECT * FROM users WHERE name = ?1 AND age > ?2");
     }
 
     #[test]
-    fn test_basic_types() {
-        let values = make_params(&[
-            ("name", "Alice".into()),
-            ("age", DbValue::Int(30)),
-            ("married", true.into()),
-            ("tags", ().into()),
-        ]);
-        let input = "User: :name, Age: :age, Married: :married, Tags: :tags in age: :age";
-        let output = replace_params(input, &values);
-        assert_eq!(output, "User: 'Alice', Age: 30, Married: true, Tags: NULL in age: 30");
+    fn test_named_to_positional_ignore_in_quotes() {
+        let keys = vec!["name"];
+        let sql = "SELECT * FROM users WHERE name = :name AND description = 'User :name here'";
+        let result = replace_named_with_positional_params(sql, &keys, '?');
+        assert_eq!(result, "SELECT * FROM users WHERE name = ?1 AND description = 'User :name here'");
     }
 
     #[test]
-    fn test_slice_params() {
-        let values = &[
-            ("name", "Bob".into()),
-            ("score", DbValue::Int(95)),
-        ];
-        let input = "Player :name scored :score points";
-        let output = replace_params(input, values as &[(&str, DbValue)]);
-        assert_eq!(output, "Player 'Bob' scored 95 points");
+    fn test_named_to_positional_escaped_quotes() {
+        let keys = vec!["name"];
+        let sql = "SELECT * FROM users WHERE name = :name AND description = 'User''s :name here' AND other = :name";
+        let result = replace_named_with_positional_params(sql, &keys, '?');
+        assert_eq!(result, "SELECT * FROM users WHERE name = ?1 AND description = 'User''s :name here' AND other = ?1");
     }
 
     #[test]
-    fn test_basic_replacement() {
-        let values = make_params(&[("name", "Alice".into()), ("age", DbValue::Int(30))]);
-        let input = "User: :name, Age: :age";
-        let output = replace_params(input, &values);
-        assert_eq!(output, "User: 'Alice', Age: 30");
+    fn test_named_to_positional_key_as_substring() {
+        let keys = vec!["name", "username"];
+        let sql = "SELECT * FROM users WHERE username = :username AND name = :name";
+        let result = replace_named_with_positional_params(sql, &keys, '?');
+        assert_eq!(result, "SELECT * FROM users WHERE username = ?2 AND name = ?1");
     }
 
     #[test]
-    fn test_quoted_literal_is_ignored() {
-        let values = make_params(&[("key", "VAL".into())]);
-        let input = "In SQL: ':key' should not be replaced";
-        let output = replace_params(input, &values);
-        assert_eq!(output, "In SQL: ':key' should not be replaced");
+    fn test_named_to_positional_no_matching_keys() {
+        let keys = vec!["name"];
+        let sql = "SELECT * FROM users WHERE id = :id";
+        let result = replace_named_with_positional_params(sql, &keys, '?');
+        assert_eq!(result, "SELECT * FROM users WHERE id = :id");
     }
 
     #[test]
-    fn test_missing_key_is_preserved() {
-        let values = make_params(&[("name", "Alice".into())]);
-        let input = "Hello :name and :missing";
-        let output = replace_params(input, &values);
-        assert_eq!(output, "Hello 'Alice' and :missing");
+    fn test_named_to_positional_multiple_occurrences() {
+        let keys = vec!["name"];
+        let sql = "SELECT * FROM users WHERE first_name = :name OR last_name = :name";
+        let result = replace_named_with_positional_params(sql, &keys, '?');
+        assert_eq!(result, "SELECT * FROM users WHERE first_name = ?1 OR last_name = ?1");
     }
 
     #[test]
-    fn test_mixed_content() {
-        let values = make_params(&[("a", "X".into()), ("b", "Y".into())]);
-        let input = "a=:a, b=':b', :c=:c";
-        let output = replace_params(input, &values);
-        assert_eq!(output, "a='X', b=':b', :c=:c");
+    fn test_named_to_positional_word_boundary() {
+        let keys = vec!["name"];
+        let sql = "SELECT * FROM users WHERE name = :name AND filename = :filename";
+        let result = replace_named_with_positional_params(sql, &keys, '?');
+        assert_eq!(result, "SELECT * FROM users WHERE name = ?1 AND filename = :filename");
     }
 
     #[test]
-    fn test_lone_colon() {
-        let values = make_params(&[]);
-        let input = "Time: 12:30";
-        let output = replace_params(input, &values);
-        assert_eq!(output, "Time: 12:30");
-    }
-
-    #[test]
-    fn test_multiple_quotes() {
-        let values = make_params(&[("x", "XVAL".into())]);
-        let input = "'literal1 :x' 'literal2' :x";
-        let output = replace_params(input, &values);
-        assert_eq!(output, "'literal1 :x' 'literal2' 'XVAL'");
+    fn test_named_to_positional_empty_keys() {
+        let keys: Vec<&str> = vec![];
+        let sql = "SELECT * FROM users WHERE name = :name";
+        let result = replace_named_with_positional_params(sql, &keys, '?');
+        assert_eq!(result, "SELECT * FROM users WHERE name = :name");
     }
 }
