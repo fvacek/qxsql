@@ -1,7 +1,7 @@
 use std::backtrace::Backtrace;
 use std::collections::HashMap;
 
-use chrono::{Utc};
+use chrono::{DateTime, Utc};
 use log::error;
 use serde::{Deserialize, Serialize};
 use shvproto::{from_rpcvalue, RpcValue};
@@ -10,7 +10,7 @@ use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
 use anyhow::{anyhow, bail};
 
-use crate::sql_utils::{self, parse_rfc3339_datetime, postgres_query_positional_args_from_sqlite, SqlInfo};
+use crate::sql_utils::{self, postgres_query_positional_args_from_sqlite, SqlInfo};
 
 pub enum DbPool {
     Postgres(PgPool),
@@ -60,6 +60,12 @@ impl From<bool> for DbValue {
 impl From<()> for DbValue {
     fn from(_value: ()) -> Self {
         DbValue::Null
+    }
+}
+
+impl From<DateTime<Utc>> for DbValue {
+    fn from(value: DateTime<Utc>) -> Self {
+        DbValue::DateTime(value)
     }
 }
 
@@ -189,7 +195,7 @@ macro_rules! bind_db_values {
                 DbValue::String(s) => q.bind(s),
                 DbValue::Int(i) => q.bind(i),
                 DbValue::Bool(b) => q.bind(b),
-                DbValue::DateTime(dt) => q.bind(dt.to_rfc3339()),
+                DbValue::DateTime(dt) => q.bind(dt),
                 DbValue::Null => q.bind(None::<&str>),
             };
         }
@@ -349,12 +355,8 @@ fn db_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<DbVal
     } else if type_name.contains("INT") {
         Ok(DbValue::Int(<i64 as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
     } else if type_name.contains("TIMESTAMP") {
-        let s = <String as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?;
-        if let Some(dt) = parse_rfc3339_datetime(&s) {
-            Ok(DbValue::DateTime(dt))
-        } else {
-            anyhow::bail!("Failed to parse timestamp: {}", s);
-        }
+        let dt = <DateTime<Utc> as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?;
+        Ok(DbValue::DateTime(dt))
     } else if type_name.contains("BOOL") {
         Ok(DbValue::Bool(<bool as sqlx::decode::Decode<Postgres>>::decode(raw_val).map_err(sqlx_to_anyhow)?))
     } else {
@@ -378,9 +380,15 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
     use log::warn;
 
+    fn parse_rfc3339_datetime(s: &str) -> Option<DateTime<Utc>> {
+        DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|dt| dt.with_timezone(&Utc))
+    }
+
     async fn test_sql_select_with_db(db_pool: DbPool) {
         let qp = QueryAndParams(
-            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT, age INTEGER, created TEXT)".into(),
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT, age INTEGER, created TIMESTAMP)".into(),
             HashMap::new(),
             None
         );
@@ -388,10 +396,10 @@ mod tests {
         res.unwrap();
 
         let dt_str = "2025-09-12T15:04:05+00:00";
-        let dt = DbValue::DateTime(parse_rfc3339_datetime(dt_str).unwrap());
+        let dt = parse_rfc3339_datetime(dt_str).unwrap();
         let qp = QueryAndParams(
             "INSERT INTO users (id, name, email, created) VALUES (:id, :name, :name, :created)".into(),
-            [ ("id".to_string(), 1.into()), ("name".to_string(), "Jane Doe".into()), ("created".to_string(), dt.clone()), ].into_iter().collect(),
+            [ ("id".to_string(), 1.into()), ("name".to_string(), "Jane Doe".into()), ("created".to_string(), dt.into()), ].into_iter().collect(),
             None
         );
         let res = sql_exec(&db_pool, &qp).await;
@@ -403,6 +411,10 @@ mod tests {
             None
         );
         let result = sql_select(&db_pool, &qp).await;
+        let expected_dt = match db_pool {
+            DbPool::Sqlite(_) => DbValue::String(dt_str.to_string()),
+            DbPool::Postgres(_) => DbValue::DateTime(dt.clone()),
+        };
         let expected = SelectResult {
             fields: vec![
                 DbField { name: "id".to_string() },
@@ -411,7 +423,7 @@ mod tests {
                 DbField { name: "age".to_string() },
                 DbField { name: "created".to_string() },
             ],
-            rows: vec![vec![1.into(), "Jane Doe".into(), "Jane Doe".into(), DbValue::Null, dt_str.into()]],
+            rows: vec![vec![1.into(), "Jane Doe".into(), "Jane Doe".into(), DbValue::Null, expected_dt]],
         };
         assert_eq!(result.unwrap(), expected);
     }
@@ -443,8 +455,7 @@ mod tests {
                     // let result = sql_select_postgres(pool, &qp).await.unwrap();
                     // println!("result2: {:?}", result);
                     let qp = QueryAndParams( "DROP TABLE IF EXISTS users".into(), HashMap::new(), None );
-                    let result = sql_exec_postgres(pool, &qp).await.unwrap();
-                    println!("result3: {:?}", result);
+                    sql_exec_postgres(pool, &qp).await.unwrap();
                 },
                 _ => panic!("not a postgres pool"),
             };
