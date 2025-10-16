@@ -234,24 +234,24 @@ pub async fn sql_exec_transaction(db: &DbPool, query: &QueryAndParamsList) -> an
 pub async fn sql_recupdate(state: QxSharedAppState, param: &RecUpdateParam) -> anyhow::Result<bool> {
     let db = state.read().await;
     match &*db {
-        DbPool::Sqlite(pool) => sql_recupdate_sqlite(&pool, param).await,
-        DbPool::Postgres(pool) => sql_recupdate_postgres(&pool, param).await,
+        DbPool::Sqlite(pool) => sql_recupdate_sqlite(pool, param).await,
+        DbPool::Postgres(pool) => sql_recupdate_postgres(pool, param).await,
     }
 }
 
 pub async fn sql_recinsert(state: QxSharedAppState, param: &RecInsertParam) -> anyhow::Result<i64> {
     let db = state.read().await;
     match &*db {
-        DbPool::Sqlite(pool) => sql_recinsert_sqlite(&pool, param).await,
-        DbPool::Postgres(pool) => sql_recinsert_postgres(&pool, param).await,
+        DbPool::Sqlite(pool) => sql_recinsert_sqlite(pool, param).await,
+        DbPool::Postgres(pool) => sql_recinsert_postgres(pool, param).await,
     }
 }
 
 pub async fn sql_recdelete(state: QxSharedAppState, param: &RecDeleteParam) -> anyhow::Result<bool> {
     let db = state.read().await;
     match &*db {
-        DbPool::Sqlite(pool) => sql_recdelete_sqlite(&pool, param).await,
-        DbPool::Postgres(pool) => sql_recdelete_postgres(&pool, param).await,
+        DbPool::Sqlite(pool) => sql_recdelete_sqlite(pool, param).await,
+        DbPool::Postgres(pool) => sql_recdelete_postgres(pool, param).await,
     }
 }
 
@@ -308,7 +308,7 @@ async fn sql_recupdate_postgres(db_pool: &Pool<Postgres>, param: &RecUpdateParam
 
 fn create_recinsert_query(param: &RecInsertParam) -> String {
     let RecInsertParam{table, record, .. } = param;
-    let keys = record.keys().map(|k| format!("{k}")).collect::<Vec<_>>().join(", ");
+    let keys = record.keys().map(|k| k.to_string()).collect::<Vec<_>>().join(", ");
     let vals = record.keys().map(|k| format!(":{k}")).collect::<Vec<_>>().join(", ");
     format!("INSERT INTO {table} ({keys}) VALUES ({vals}) RETURNING id")
 }
