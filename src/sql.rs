@@ -135,9 +135,6 @@ impl TryFrom<&RpcValue> for QueryAndParamsList {
     }
 }
 
-// #[derive(Debug,Serialize,Deserialize)]
-// pub struct SqlRecord (HashMap<String, DbValue>);
-
 #[derive(Debug,Serialize,Deserialize)]
 pub struct RecUpdateParam {
     pub table: String,
@@ -169,13 +166,20 @@ impl TryFrom<&RpcValue> for RecInsertParam {
     }
 }
 
-// #[derive(Debug,Serialize,Deserialize)]
-// pub struct RecDeleteParam {
-//     pub table: String,
-//     pub id: i64,
-//     #[serde(default)]
-//     pub issuer: String,
-// }
+#[derive(Debug,Serialize,Deserialize)]
+pub struct RecDeleteParam {
+    pub table: String,
+    pub id: i64,
+    #[serde(default)]
+    pub issuer: String,
+}
+impl TryFrom<&RpcValue> for RecDeleteParam {
+    type Error = String;
+
+    fn try_from(value: &RpcValue) -> Result<Self, Self::Error> {
+        from_rpcvalue(value).map_err(|e| e.to_string())
+    }
+}
 
 #[derive(Debug, Serialize,Deserialize, PartialEq)]
 pub struct DbField {
@@ -214,6 +218,14 @@ pub async fn sql_recinsert(state: QxSharedAppState, param: &RecInsertParam) -> a
     match &*db {
         DbPool::Sqlite(pool) => sql_recinsert_sqlite(&pool, param).await,
         DbPool::Postgres(pool) => sql_recinsert_postgres(&pool, param).await,
+    }
+}
+
+pub async fn sql_recdelete(state: QxSharedAppState, param: &RecDeleteParam) -> anyhow::Result<bool> {
+    let db = state.read().await;
+    match &*db {
+        DbPool::Sqlite(pool) => sql_recdelete_sqlite(&pool, param).await,
+        DbPool::Postgres(pool) => sql_recdelete_postgres(&pool, param).await,
     }
 }
 
@@ -321,6 +333,25 @@ async fn sql_recinsert_postgres(db_pool: &Pool<Postgres>, param: &RecInsertParam
         id_i32 as i64
     });
     Ok(insert_id)
+}
+
+fn create_recdelete_query(param: &RecDeleteParam) -> String {
+    let RecDeleteParam{table, id, .. } = param;
+    format!("DELETE FROM {table} WHERE id = {id}")
+}
+
+async fn sql_recdelete_sqlite(db_pool: &Pool<Sqlite>, param: &RecDeleteParam) -> anyhow::Result<bool> {
+    let sql = create_recdelete_query(param);
+    let q = sqlx::query(&sql);
+    let result = q.execute(db_pool).await?;
+    Ok(result.rows_affected() == 1)
+}
+
+async fn sql_recdelete_postgres(db_pool: &Pool<Postgres>, param: &RecDeleteParam) -> anyhow::Result<bool> {
+    let sql = create_recdelete_query(param);
+    let q = sqlx::query(&sql);
+    let result = q.execute(db_pool).await?;
+    Ok(result.rows_affected() == 1)
 }
 
 // Common logic for SQL execution
