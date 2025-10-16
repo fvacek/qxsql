@@ -5,11 +5,11 @@ use chrono::{DateTime, Utc};
 use log::error;
 use serde::{Deserialize, Serialize};
 use shvproto::{from_rpcvalue, RpcValue};
-use sqlx::prelude::FromRow;
 use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
 use anyhow::{anyhow, bail};
 
+use crate::appstate::{QxSharedAppState};
 use crate::sql_utils::{self, postgres_query_positional_args_from_sqlite, SqlInfo};
 
 pub enum DbPool {
@@ -135,6 +135,41 @@ impl TryFrom<&RpcValue> for QueryAndParamsList {
     }
 }
 
+// #[derive(Debug,Serialize,Deserialize)]
+// pub struct SqlRecord (HashMap<String, DbValue>);
+
+#[derive(Debug,Serialize,Deserialize)]
+pub struct RecUpdateParam {
+    pub table: String,
+    pub id: i64,
+    pub record: HashMap<String, DbValue>,
+    #[serde(default)]
+    pub issuer: String,
+}
+impl TryFrom<&RpcValue> for RecUpdateParam {
+    type Error = String;
+
+    fn try_from(value: &RpcValue) -> Result<Self, Self::Error> {
+        from_rpcvalue(value).map_err(|e| e.to_string())
+    }
+}
+
+// #[derive(Debug,Serialize,Deserialize)]
+// pub struct RecInsertParam {
+//     pub table: String,
+//     pub record: HashMap<String, DbValue>,
+//     #[serde(default)]
+//     pub issuer: String,
+// }
+
+// #[derive(Debug,Serialize,Deserialize)]
+// pub struct RecDeleteParam {
+//     pub table: String,
+//     pub id: i64,
+//     #[serde(default)]
+//     pub issuer: String,
+// }
+
 #[derive(Debug, Serialize,Deserialize, PartialEq)]
 pub struct DbField {
     pub name: String,
@@ -159,11 +194,23 @@ pub async fn sql_select(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<S
     }
 }
 
+pub async fn sql_recupdate(state: QxSharedAppState, param: &RecUpdateParam) -> anyhow::Result<bool> {
+    let db = state.read().await;
+    match &*db {
+        DbPool::Sqlite(pool) => sql_recupdate_sqlite(&pool, param).await,
+        DbPool::Postgres(pool) => sql_recupdate_postgres(&pool, param).await,
+    }
+}
+
+#[derive(Debug, Serialize,Deserialize, PartialEq)]
+pub enum RecOp {Insert, Update, Delete}
+
 #[derive(Debug, Serialize,Deserialize, PartialEq)]
 pub struct RecChng {
     pub table: String,
     pub id: i64,
     pub record: Option<HashMap<String, DbValue>>,
+    pub op: RecOp,
     pub issuer: String,
 }
 
@@ -182,8 +229,12 @@ pub async fn sql_exec_transaction(db: &DbPool, query: &QueryAndParamsList) -> an
 }
 
 fn prepare_sql_with_params(query: &QueryAndParams, repl_char: char) -> String {
-    let keys = query.params().keys().map(|s| s.as_str()).collect::<Vec<_>>();
-    sql_utils::replace_named_with_positional_params(query.query(), &keys, repl_char)
+    prepare_sql_with_query_params(query.query(), query.params(), repl_char)
+}
+
+fn prepare_sql_with_query_params(query: &str, params: &HashMap<String, DbValue>, repl_char: char) -> String {
+    let keys = params.keys().map(|s| s.as_str()).collect::<Vec<_>>();
+    sql_utils::replace_named_with_positional_params(query, &keys, repl_char)
 }
 
 // Helper macro to bind parameters to a query - eliminates duplication in transactions
@@ -201,6 +252,30 @@ macro_rules! bind_db_values {
         }
         q
     }};
+}
+
+
+async fn sql_recupdate_sqlite(db_pool: &Pool<Sqlite>, param: &RecUpdateParam) -> anyhow::Result<bool> {
+    let RecUpdateParam{table, id, record, .. } = param;
+    let keys = record.keys().map(|k| format!("{k} = :{k}")).collect::<Vec<_>>().join(", ");
+    let sql = format!("UPDATE {table} SET {keys} WHERE {table}.id={id}");
+    let q = sqlx::query(&sql);
+    let q = bind_db_values!(q, record.values());
+    let result = q.execute(db_pool).await?;
+    let rows_affected = result.rows_affected() as i64;
+    Ok (rows_affected == 1)
+}
+
+async fn sql_recupdate_postgres(db_pool: &Pool<Postgres>, param: &RecUpdateParam) -> anyhow::Result<bool> {
+    let RecUpdateParam{table, id, record, .. } = param;
+    let keys = record.keys().map(|k| format!("{k} = :{k}")).collect::<Vec<_>>().join(", ");
+    let sql = format!("UPDATE {table} SET {keys} WHERE {table}.id={id}");
+    let sql = prepare_sql_with_query_params(&sql, record, '$');
+    let q = sqlx::query(&sql);
+    let q = bind_db_values!(q, record.values());
+    let result = q.execute(db_pool).await?;
+    let rows_affected = result.rows_affected() as i64;
+    Ok (rows_affected == 1)
 }
 
 // Common logic for SQL execution
@@ -362,13 +437,6 @@ fn db_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<DbVal
     } else {
         anyhow::bail!("Unsupported type: {}", type_name);
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, FromRow)]
-pub(crate) struct EventRecord {
-    pub id: i64,
-    pub api_token: String,
-    pub owner: String,
 }
 
 #[cfg(test)]

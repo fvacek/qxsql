@@ -1,7 +1,8 @@
 use crate::{
+    appstate::{QxLockedAppState, QxSharedAppState},
     sql::{
-        DbValue, QueryAndParams, QueryAndParamsList, RecChng, sql_exec, sql_exec_transaction,
-        sql_select,
+        DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecOp, RecUpdateParam, sql_exec,
+        sql_exec_transaction, sql_recupdate, sql_select,
     },
     sql_utils::SqlOperation,
 };
@@ -24,6 +25,7 @@ use shvrpc::util::parse_log_verbosity;
 use simple_logger::SimpleLogger;
 use url::Url;
 
+mod appstate;
 mod config;
 mod sql;
 mod sql_utils;
@@ -48,7 +50,10 @@ fn check_write_authorization(request: &shvrpc::RpcMessage) -> Result<(), RpcErro
             return Ok(());
         }
 
-        return Err(RpcError::new( RpcErrorCode::PermissionDenied, "Unauthorized", ));
+        return Err(RpcError::new(
+            RpcErrorCode::PermissionDenied,
+            "Unauthorized",
+        ));
     }
     Ok(())
 }
@@ -69,7 +74,11 @@ struct Opts {
     mount: Option<String>,
 
     /// Database connection string
-    #[arg(short, long)]
+    #[arg(
+        short,
+        long,
+        help = "Database connection string, examle: postgres://myuser:mypassword@localhost/mydb?options=--search_path%3Dmyschema"
+    )]
     database: Option<String>,
 
     /// Database connection string
@@ -84,8 +93,6 @@ struct Opts {
     #[arg(short, long)]
     verbose: Option<String>,
 }
-
-type State = RwLock<crate::sql::DbPool>;
 
 fn init_logger(cli_opts: &Opts) {
     let mut logger = SimpleLogger::new();
@@ -153,8 +160,8 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
         crate::sql::DbPool::Postgres(PgPoolOptions::new().connect(config.db.url.as_str()).await?)
     };
 
-    let app_state = AppState::new(RwLock::new(db));
-    let cnt = app_state.clone();
+    let app_state: QxSharedAppState = AppState::new(RwLock::new(db));
+    let app_state2 = app_state.clone();
 
     // let app_tasks = move |_client_cmd_tx, _client_evt_rx| {
     //     tokio::task::spawn(emit_chng_task(client_cmd_tx, client_evt_rx, app_state));
@@ -168,7 +175,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
         .expect("Global config should only be set once");
 
     let sql_node = shvclient::fixed_node!(
-        sql_handler<State>(request, client_cmd_tx, app_state) {
+        sql_handler<QxLockedAppState>(request, client_cmd_tx, app_state) {
             "select" [None, Read, "[s:query,{s|i|b|t|n}:params]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParams) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
@@ -203,6 +210,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                                             table: result.info.table_name,
                                             id: result.insert_id,
                                             record: Some(record),
+                                            op: RecOp::Insert,
                                             issuer: query.issuer().unwrap_or_default().to_string(),
                                         })
                                     }
@@ -214,6 +222,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                                             table: result.info.table_name,
                                             id,
                                             record: Some(record),
+                                            op: RecOp::Update,
                                             issuer: query.issuer().unwrap_or_default().to_string(),
                                         })
                                     }
@@ -223,6 +232,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                                             table: result.info.table_name,
                                             id,
                                             record: None,
+                                            op: RecOp::Delete,
                                             issuer: query.issuer().unwrap_or_default().to_string(),
                                         })
                                     }
@@ -276,13 +286,82 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                 });
                 None
             }
+            "recupdate" [None, Write, "{s:table,i:id,{s|i|b|t|n}:record,s:issuer}", "b"] (param: RecUpdateParam) => {
+                let mut resp = request.prepare_response().unwrap_or_default();
+                tokio::task::spawn(async move {
+                    let result = sql_recupdate(app_state, &param).await;
+                    let mut send_signal = false;
+                    match result {
+                        Ok(result) => {
+                            send_signal = result;
+                            resp.set_result(to_rpcvalue(&result).expect("serde should work"));
+                        },
+                        Err(e) => {
+                            resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("Update record error: {}", e)));
+                        }
+                    };
+                    client_cmd_tx.send_message(resp).unwrap_or_else(|err| log::error!("sql_select: Cannot send response ({err})"));
+                    if send_signal {
+                        let recchng = RecChng {table:param.table, id:param.id, record:Some(param.record), op: RecOp::Update, issuer:param.issuer };
+                        let rec = to_rpcvalue(&recchng).expect("serde should work");
+                        client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal("sql", "recchng", Some(rec)))
+                                        .unwrap_or_else(|err| log::error!("alarmGroups: Cannot send signal ({err})"));
+                    }
+                });
+                None
+            }
+            // "recinsert" [None, Write, "{s:table,{s|i|b|t|n}:record,s:issuer}", "i"] (query: QueryAndParams) => {
+            //     let mut resp = request.prepare_response().unwrap_or_default();
+            //     tokio::task::spawn(async move {
+            //         let state = app_state.read().await;
+            //         let result = sql_select(&state, &query).await;
+            //         match result {
+            //             Ok(result) => resp.set_result(to_rpcvalue(&result).expect("serde should work")),
+            //             Err(e) => resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("SQL error: {}", e))),
+            //         };
+            //         if let Err(e) = client_cmd_tx.send_message(resp) {
+            //             error!("sql_select: Cannot send response ({e})");
+            //         }
+            //     });
+            //     None
+            // }
+            // "recdelete" [None, Write, "{s:table,i:id,s:issuer}", "b"] (query: QueryAndParams) => {
+            //     let mut resp = request.prepare_response().unwrap_or_default();
+            //     tokio::task::spawn(async move {
+            //         let state = app_state.read().await;
+            //         let result = sql_select(&state, &query).await;
+            //         match result {
+            //             Ok(result) => resp.set_result(to_rpcvalue(&result).expect("serde should work")),
+            //             Err(e) => resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("SQL error: {}", e))),
+            //         };
+            //         if let Err(e) = client_cmd_tx.send_message(resp) {
+            //             error!("sql_select: Cannot send response ({e})");
+            //         }
+            //     });
+            //     None
+            // }
+        }
+    );
+
+    let dot_app_node = shvclient::fixed_node!(
+        sql_handler<QxLockedAppState>(request, _client_cmd_tx, _app_state) {
+            "name" [IsGetter, Browse, "n", "s"] => {
+                Some(Ok(env!("CARGO_PKG_NAME").into()))
+            }
+            "version" [IsGetter, Browse, "n", "s"] => {
+                Some(Ok(env!("CARGO_PKG_VERSION").into()))
+            }
+            "ping" [None, Browse, "n", "n"] => {
+                Some(Ok(().into()))
+            }
         }
     );
 
     shvclient::Client::new()
         .app(DotAppNode::new("qxsql"))
+        .mount(".app", dot_app_node)
         .mount("sql", sql_node)
-        .with_app_state(cnt)
+        .with_app_state(app_state2)
         // .run_with_init(&client_config, app_tasks)
         .run(&config.client)
         .await
