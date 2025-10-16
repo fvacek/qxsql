@@ -198,10 +198,36 @@ pub struct SelectResult {
     pub rows: Vec<Vec<DbValue>>,
 }
 
+#[derive(Debug, Serialize,Deserialize, PartialEq)]
+pub enum RecOp {Insert, Update, Delete}
+
+#[derive(Debug, Serialize,Deserialize, PartialEq)]
+pub struct RecChng {
+    pub table: String,
+    pub id: i64,
+    pub record: Option<HashMap<String, DbValue>>,
+    pub op: RecOp,
+    pub issuer: String,
+}
+
 pub async fn sql_select(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<SelectResult> {
     match db {
         DbPool::Sqlite(pool) => sql_select_sqlite(pool, query).await,
         DbPool::Postgres(pool) => sql_select_postgres(pool, query).await,
+    }
+}
+
+pub async fn sql_exec(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
+    match db {
+        DbPool::Sqlite(pool) => sql_exec_sqlite(pool, query).await,
+        DbPool::Postgres(pool) => sql_exec_postgres(pool, query).await,
+    }
+}
+
+pub async fn sql_exec_transaction(db: &DbPool, query: &QueryAndParamsList) -> anyhow::Result<()> {
+    match db {
+        DbPool::Sqlite(pool) => sql_exec_transaction_sqlite(pool, query).await,
+        DbPool::Postgres(pool) => sql_exec_transaction_postgres(pool, query).await,
     }
 }
 
@@ -226,32 +252,6 @@ pub async fn sql_recdelete(state: QxSharedAppState, param: &RecDeleteParam) -> a
     match &*db {
         DbPool::Sqlite(pool) => sql_recdelete_sqlite(&pool, param).await,
         DbPool::Postgres(pool) => sql_recdelete_postgres(&pool, param).await,
-    }
-}
-
-#[derive(Debug, Serialize,Deserialize, PartialEq)]
-pub enum RecOp {Insert, Update, Delete}
-
-#[derive(Debug, Serialize,Deserialize, PartialEq)]
-pub struct RecChng {
-    pub table: String,
-    pub id: i64,
-    pub record: Option<HashMap<String, DbValue>>,
-    pub op: RecOp,
-    pub issuer: String,
-}
-
-pub async fn sql_exec(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
-    match db {
-        DbPool::Sqlite(pool) => sql_exec_sqlite(pool, query).await,
-        DbPool::Postgres(pool) => sql_exec_postgres(pool, query).await,
-    }
-}
-
-pub async fn sql_exec_transaction(db: &DbPool, query: &QueryAndParamsList) -> anyhow::Result<()> {
-    match db {
-        DbPool::Sqlite(pool) => sql_exec_transaction_sqlite(pool, query).await,
-        DbPool::Postgres(pool) => sql_exec_transaction_postgres(pool, query).await,
     }
 }
 

@@ -8,7 +8,6 @@ use crate::{
 use shvclient::appnodes::DotAppNode;
 use shvrpc::RpcMessageMetaTags;
 use shvrpc::{
-    RpcMessage,
     rpcmessage::{RpcError, RpcErrorCode},
 };
 use sqlx::postgres::PgPoolOptions;
@@ -252,17 +251,9 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                         error!("sql_exec: Cannot send response ({e})");
                     }
                     if let Some(recchng) = recchng {
-                        match to_rpcvalue(&recchng) {
-                            Ok(rv) => {
-                                let msg = RpcMessage::new_signal("sql", "recchng", Some(rv));
-                                if let Err(e) = client_cmd_tx.send_message(msg) {
-                                    error!("sql_exec: Cannot send signal ({e})");
-                                }
-                            },
-                            Err(e) => {
-                                error!("sql_exec: Cannot convert RecChng to RPC value ({e})");
-                            }
-                        }
+                        let rec = to_rpcvalue(&recchng).expect("serde should work");
+                        client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal("sql", "recchng", Some(rec)))
+                                        .unwrap_or_else(|err| log::error!("Cannot send signal ({err})"));
                     }
                 });
                 None
@@ -304,7 +295,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                         let recchng = RecChng {table:param.table, id:param.id, record:Some(param.record), op: RecOp::Update, issuer:param.issuer };
                         let rec = to_rpcvalue(&recchng).expect("serde should work");
                         client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal("sql", "recchng", Some(rec)))
-                                        .unwrap_or_else(|err| log::error!("alarmGroups: Cannot send signal ({err})"));
+                                        .unwrap_or_else(|err| log::error!("Cannot send signal ({err})"));
                     }
                 });
                 None
@@ -328,7 +319,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                         let recchng = RecChng {table:param.table, id:insert_id, record:Some(param.record), op: RecOp::Insert, issuer:param.issuer };
                         let rec = to_rpcvalue(&recchng).expect("serde should work");
                         client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal("sql", "recchng", Some(rec)))
-                                        .unwrap_or_else(|err| log::error!("alarmGroups: Cannot send signal ({err})"));
+                                        .unwrap_or_else(|err| log::error!("Cannot send signal ({err})"));
                     }
                 });
                 None
@@ -352,7 +343,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                         let recchng = RecChng {table:param.table, id:param.id, record:None, op: RecOp::Delete, issuer:param.issuer };
                         let rec = to_rpcvalue(&recchng).expect("serde should work");
                         client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal("sql", "recchng", Some(rec)))
-                                        .unwrap_or_else(|err| log::error!("alarmGroups: Cannot send signal ({err})"));
+                                        .unwrap_or_else(|err| log::error!("Cannot send signal ({err})"));
                     }
                 });
                 None
