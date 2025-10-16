@@ -1,8 +1,7 @@
 use crate::{
     appstate::{QxLockedAppState, QxSharedAppState},
     sql::{
-        DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecOp, RecUpdateParam, sql_exec,
-        sql_exec_transaction, sql_recupdate, sql_select,
+        sql_exec, sql_exec_transaction, sql_recinsert, sql_recupdate, sql_select, DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecInsertParam, RecOp, RecUpdateParam
     },
     sql_utils::SqlOperation,
 };
@@ -310,21 +309,30 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                 });
                 None
             }
-            // "recinsert" [None, Write, "{s:table,{s|i|b|t|n}:record,s:issuer}", "i"] (query: QueryAndParams) => {
-            //     let mut resp = request.prepare_response().unwrap_or_default();
-            //     tokio::task::spawn(async move {
-            //         let state = app_state.read().await;
-            //         let result = sql_select(&state, &query).await;
-            //         match result {
-            //             Ok(result) => resp.set_result(to_rpcvalue(&result).expect("serde should work")),
-            //             Err(e) => resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("SQL error: {}", e))),
-            //         };
-            //         if let Err(e) = client_cmd_tx.send_message(resp) {
-            //             error!("sql_select: Cannot send response ({e})");
-            //         }
-            //     });
-            //     None
-            // }
+            "recinsert" [None, Write, "{s:table,{s|i|b|t|n}:record,s:issuer}", "i"] (param: RecInsertParam) => {
+                let mut resp = request.prepare_response().unwrap_or_default();
+                tokio::task::spawn(async move {
+                    let result = sql_recinsert(app_state, &param).await;
+                    let insert_id = match result {
+                        Ok(result) => {
+                            resp.set_result(to_rpcvalue(&result).expect("serde should work"));
+                            Some(result)
+                        },
+                        Err(e) => {
+                            resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("Update record error: {}", e)));
+                            None
+                        }
+                    };
+                    client_cmd_tx.send_message(resp).unwrap_or_else(|err| log::error!("sql_select: Cannot send response ({err})"));
+                    if let Some(insert_id) = insert_id {
+                        let recchng = RecChng {table:param.table, id:insert_id, record:Some(param.record), op: RecOp::Insert, issuer:param.issuer };
+                        let rec = to_rpcvalue(&recchng).expect("serde should work");
+                        client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal("sql", "recchng", Some(rec)))
+                                        .unwrap_or_else(|err| log::error!("alarmGroups: Cannot send signal ({err})"));
+                    }
+                });
+                None
+            }
             // "recdelete" [None, Write, "{s:table,i:id,s:issuer}", "b"] (query: QueryAndParams) => {
             //     let mut resp = request.prepare_response().unwrap_or_default();
             //     tokio::task::spawn(async move {

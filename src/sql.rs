@@ -154,13 +154,20 @@ impl TryFrom<&RpcValue> for RecUpdateParam {
     }
 }
 
-// #[derive(Debug,Serialize,Deserialize)]
-// pub struct RecInsertParam {
-//     pub table: String,
-//     pub record: HashMap<String, DbValue>,
-//     #[serde(default)]
-//     pub issuer: String,
-// }
+#[derive(Debug,Serialize,Deserialize)]
+pub struct RecInsertParam {
+    pub table: String,
+    pub record: HashMap<String, DbValue>,
+    #[serde(default)]
+    pub issuer: String,
+}
+impl TryFrom<&RpcValue> for RecInsertParam {
+    type Error = String;
+
+    fn try_from(value: &RpcValue) -> Result<Self, Self::Error> {
+        from_rpcvalue(value).map_err(|e| e.to_string())
+    }
+}
 
 // #[derive(Debug,Serialize,Deserialize)]
 // pub struct RecDeleteParam {
@@ -199,6 +206,14 @@ pub async fn sql_recupdate(state: QxSharedAppState, param: &RecUpdateParam) -> a
     match &*db {
         DbPool::Sqlite(pool) => sql_recupdate_sqlite(&pool, param).await,
         DbPool::Postgres(pool) => sql_recupdate_postgres(&pool, param).await,
+    }
+}
+
+pub async fn sql_recinsert(state: QxSharedAppState, param: &RecInsertParam) -> anyhow::Result<i64> {
+    let db = state.read().await;
+    match &*db {
+        DbPool::Sqlite(pool) => sql_recinsert_sqlite(&pool, param).await,
+        DbPool::Postgres(pool) => sql_recinsert_postgres(&pool, param).await,
     }
 }
 
@@ -254,28 +269,58 @@ macro_rules! bind_db_values {
     }};
 }
 
-
-async fn sql_recupdate_sqlite(db_pool: &Pool<Sqlite>, param: &RecUpdateParam) -> anyhow::Result<bool> {
+fn create_recupdate_query(param: &RecUpdateParam) -> String {
     let RecUpdateParam{table, id, record, .. } = param;
     let keys = record.keys().map(|k| format!("{k} = :{k}")).collect::<Vec<_>>().join(", ");
-    let sql = format!("UPDATE {table} SET {keys} WHERE {table}.id={id}");
+    format!("UPDATE {table} SET {keys} WHERE {table}.id={id}")
+}
+
+async fn sql_recupdate_sqlite(db_pool: &Pool<Sqlite>, param: &RecUpdateParam) -> anyhow::Result<bool> {
+    let sql = create_recupdate_query(param);
     let q = sqlx::query(&sql);
-    let q = bind_db_values!(q, record.values());
+    let q = bind_db_values!(q, param.record.values());
     let result = q.execute(db_pool).await?;
     let rows_affected = result.rows_affected() as i64;
     Ok (rows_affected == 1)
 }
 
 async fn sql_recupdate_postgres(db_pool: &Pool<Postgres>, param: &RecUpdateParam) -> anyhow::Result<bool> {
-    let RecUpdateParam{table, id, record, .. } = param;
-    let keys = record.keys().map(|k| format!("{k} = :{k}")).collect::<Vec<_>>().join(", ");
-    let sql = format!("UPDATE {table} SET {keys} WHERE {table}.id={id}");
-    let sql = prepare_sql_with_query_params(&sql, record, '$');
+    let sql = create_recupdate_query(param);
+    let sql = prepare_sql_with_query_params(&sql, &param.record, '$');
     let q = sqlx::query(&sql);
-    let q = bind_db_values!(q, record.values());
+    let q = bind_db_values!(q, param.record.values());
     let result = q.execute(db_pool).await?;
     let rows_affected = result.rows_affected() as i64;
     Ok (rows_affected == 1)
+}
+
+fn create_recinsert_query(param: &RecInsertParam) -> String {
+    let RecInsertParam{table, record, .. } = param;
+    let keys = record.keys().map(|k| format!("{k}")).collect::<Vec<_>>().join(", ");
+    let vals = record.keys().map(|k| format!(":{k}")).collect::<Vec<_>>().join(", ");
+    format!("INSERT INTO {table} ({keys}) VALUES ({vals}) RETURNING id")
+}
+
+async fn sql_recinsert_sqlite(db_pool: &Pool<Sqlite>, param: &RecInsertParam) -> anyhow::Result<i64> {
+    let sql = create_recinsert_query(param);
+    let q = sqlx::query(&sql);
+    let q = bind_db_values!(q, param.record.values());
+    let row = q.fetch_one(db_pool).await?;
+    let insert_id = row.get(0);
+    Ok(insert_id)
+}
+
+async fn sql_recinsert_postgres(db_pool: &Pool<Postgres>, param: &RecInsertParam) -> anyhow::Result<i64> {
+    let sql = create_recinsert_query(param);
+    let sql = prepare_sql_with_query_params(&sql, &param.record, '$');
+    let q = sqlx::query(&sql);
+    let q = bind_db_values!(q, param.record.values());
+    let row = q.fetch_one(db_pool).await?;
+    let insert_id: i64 = row.try_get(0).unwrap_or_else(|_| {
+        let id_i32: i32 = row.get(0);
+        id_i32 as i64
+    });
+    Ok(insert_id)
 }
 
 // Common logic for SQL execution
