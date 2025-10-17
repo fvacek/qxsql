@@ -1,7 +1,7 @@
 use crate::{
     appstate::{QxLockedAppState, QxSharedAppState},
     sql::{
-        sql_exec, sql_exec_transaction, sql_recdelete, sql_recinsert, sql_recupdate, sql_select, DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecUpdateParam
+        sql_exec, sql_exec_transaction, sql_rec_delete, sql_rec_create, sql_rec_update, sql_select, DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecUpdateParam
     },
     sql_utils::SqlOperation,
 };
@@ -276,10 +276,10 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                 });
                 None
             }
-            "recupdate" [None, Write, "{s:table,i:id,{s|i|b|t|n}:record,s:issuer}", "b"] (param: RecUpdateParam) => {
+            "update" [None, Write, "{s:table,i:id,{s|i|b|t|n}:record,s:issuer}", "b"] (param: RecUpdateParam) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
-                    let result = sql_recupdate(app_state, &param).await;
+                    let result = sql_rec_update(app_state, &param).await;
                     let mut send_signal = false;
                     match result {
                         Ok(result) => {
@@ -300,10 +300,10 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                 });
                 None
             }
-            "recinsert" [None, Write, "{s:table,{s|i|b|t|n}:record,s:issuer}", "i"] (param: RecInsertParam) => {
+            "create" [None, Write, "{s:table,{s|i|b|t|n}:record,s:issuer}", "i"] (param: RecInsertParam) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
-                    let result = sql_recinsert(app_state, &param).await;
+                    let result = sql_rec_create(app_state, &param).await;
                     let insert_id = match result {
                         Ok(result) => {
                             resp.set_result(to_rpcvalue(&result).expect("serde should work"));
@@ -324,10 +324,10 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                 });
                 None
             }
-            "recdelete" [None, Write, "{s:table,i:id,s:issuer}", "b"] (param: RecDeleteParam) => {
+            "delete" [None, Write, "{s:table,i:id,s:issuer}", "b"] (param: RecDeleteParam) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
-                    let result = sql_recdelete(app_state, &param).await;
+                    let result = sql_rec_delete(app_state, &param).await;
                     let was_deleted = match result {
                         Ok(result) => {
                             resp.set_result(to_rpcvalue(&result).expect("serde should work"));

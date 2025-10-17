@@ -231,27 +231,27 @@ pub async fn sql_exec_transaction(db: &DbPool, query: &QueryAndParamsList) -> an
     }
 }
 
-pub async fn sql_recupdate(state: QxSharedAppState, param: &RecUpdateParam) -> anyhow::Result<bool> {
+pub async fn sql_rec_update(state: QxSharedAppState, param: &RecUpdateParam) -> anyhow::Result<bool> {
     let db = state.read().await;
     match &*db {
-        DbPool::Sqlite(pool) => sql_recupdate_sqlite(pool, param).await,
-        DbPool::Postgres(pool) => sql_recupdate_postgres(pool, param).await,
+        DbPool::Sqlite(pool) => sql_rec_update_sqlite(pool, param).await,
+        DbPool::Postgres(pool) => sql_rec_update_postgres(pool, param).await,
     }
 }
 
-pub async fn sql_recinsert(state: QxSharedAppState, param: &RecInsertParam) -> anyhow::Result<i64> {
+pub async fn sql_rec_create(state: QxSharedAppState, param: &RecInsertParam) -> anyhow::Result<i64> {
     let db = state.read().await;
     match &*db {
-        DbPool::Sqlite(pool) => sql_recinsert_sqlite(pool, param).await,
-        DbPool::Postgres(pool) => sql_recinsert_postgres(pool, param).await,
+        DbPool::Sqlite(pool) => sql_rec_create_sqlite(pool, param).await,
+        DbPool::Postgres(pool) => sql_rec_create_postgres(pool, param).await,
     }
 }
 
-pub async fn sql_recdelete(state: QxSharedAppState, param: &RecDeleteParam) -> anyhow::Result<bool> {
+pub async fn sql_rec_delete(state: QxSharedAppState, param: &RecDeleteParam) -> anyhow::Result<bool> {
     let db = state.read().await;
     match &*db {
-        DbPool::Sqlite(pool) => sql_recdelete_sqlite(pool, param).await,
-        DbPool::Postgres(pool) => sql_recdelete_postgres(pool, param).await,
+        DbPool::Sqlite(pool) => sql_rec_delete_sqlite(pool, param).await,
+        DbPool::Postgres(pool) => sql_rec_delete_postgres(pool, param).await,
     }
 }
 
@@ -281,14 +281,14 @@ macro_rules! bind_db_values {
     }};
 }
 
-fn create_recupdate_query(param: &RecUpdateParam) -> String {
+fn create_rec_update_query(param: &RecUpdateParam) -> String {
     let RecUpdateParam{table, id, record, .. } = param;
     let keys = record.keys().map(|k| format!("{k} = :{k}")).collect::<Vec<_>>().join(", ");
     format!("UPDATE {table} SET {keys} WHERE {table}.id={id}")
 }
 
-async fn sql_recupdate_sqlite(db_pool: &Pool<Sqlite>, param: &RecUpdateParam) -> anyhow::Result<bool> {
-    let sql = create_recupdate_query(param);
+async fn sql_rec_update_sqlite(db_pool: &Pool<Sqlite>, param: &RecUpdateParam) -> anyhow::Result<bool> {
+    let sql = create_rec_update_query(param);
     let q = sqlx::query(&sql);
     let q = bind_db_values!(q, param.record.values());
     let result = q.execute(db_pool).await?;
@@ -296,8 +296,8 @@ async fn sql_recupdate_sqlite(db_pool: &Pool<Sqlite>, param: &RecUpdateParam) ->
     Ok (rows_affected == 1)
 }
 
-async fn sql_recupdate_postgres(db_pool: &Pool<Postgres>, param: &RecUpdateParam) -> anyhow::Result<bool> {
-    let sql = create_recupdate_query(param);
+async fn sql_rec_update_postgres(db_pool: &Pool<Postgres>, param: &RecUpdateParam) -> anyhow::Result<bool> {
+    let sql = create_rec_update_query(param);
     let sql = prepare_sql_with_query_params(&sql, &param.record, '$');
     let q = sqlx::query(&sql);
     let q = bind_db_values!(q, param.record.values());
@@ -306,15 +306,15 @@ async fn sql_recupdate_postgres(db_pool: &Pool<Postgres>, param: &RecUpdateParam
     Ok (rows_affected == 1)
 }
 
-fn create_recinsert_query(param: &RecInsertParam) -> String {
+fn create_rec_create_query(param: &RecInsertParam) -> String {
     let RecInsertParam{table, record, .. } = param;
     let keys = record.keys().map(|k| k.to_string()).collect::<Vec<_>>().join(", ");
     let vals = record.keys().map(|k| format!(":{k}")).collect::<Vec<_>>().join(", ");
     format!("INSERT INTO {table} ({keys}) VALUES ({vals}) RETURNING id")
 }
 
-async fn sql_recinsert_sqlite(db_pool: &Pool<Sqlite>, param: &RecInsertParam) -> anyhow::Result<i64> {
-    let sql = create_recinsert_query(param);
+async fn sql_rec_create_sqlite(db_pool: &Pool<Sqlite>, param: &RecInsertParam) -> anyhow::Result<i64> {
+    let sql = create_rec_create_query(param);
     let q = sqlx::query(&sql);
     let q = bind_db_values!(q, param.record.values());
     let row = q.fetch_one(db_pool).await?;
@@ -322,8 +322,8 @@ async fn sql_recinsert_sqlite(db_pool: &Pool<Sqlite>, param: &RecInsertParam) ->
     Ok(insert_id)
 }
 
-async fn sql_recinsert_postgres(db_pool: &Pool<Postgres>, param: &RecInsertParam) -> anyhow::Result<i64> {
-    let sql = create_recinsert_query(param);
+async fn sql_rec_create_postgres(db_pool: &Pool<Postgres>, param: &RecInsertParam) -> anyhow::Result<i64> {
+    let sql = create_rec_create_query(param);
     let sql = prepare_sql_with_query_params(&sql, &param.record, '$');
     let q = sqlx::query(&sql);
     let q = bind_db_values!(q, param.record.values());
@@ -335,20 +335,20 @@ async fn sql_recinsert_postgres(db_pool: &Pool<Postgres>, param: &RecInsertParam
     Ok(insert_id)
 }
 
-fn create_recdelete_query(param: &RecDeleteParam) -> String {
+fn create_rec_delete_query(param: &RecDeleteParam) -> String {
     let RecDeleteParam{table, id, .. } = param;
     format!("DELETE FROM {table} WHERE id = {id}")
 }
 
-async fn sql_recdelete_sqlite(db_pool: &Pool<Sqlite>, param: &RecDeleteParam) -> anyhow::Result<bool> {
-    let sql = create_recdelete_query(param);
+async fn sql_rec_delete_sqlite(db_pool: &Pool<Sqlite>, param: &RecDeleteParam) -> anyhow::Result<bool> {
+    let sql = create_rec_delete_query(param);
     let q = sqlx::query(&sql);
     let result = q.execute(db_pool).await?;
     Ok(result.rows_affected() == 1)
 }
 
-async fn sql_recdelete_postgres(db_pool: &Pool<Postgres>, param: &RecDeleteParam) -> anyhow::Result<bool> {
-    let sql = create_recdelete_query(param);
+async fn sql_rec_delete_postgres(db_pool: &Pool<Postgres>, param: &RecDeleteParam) -> anyhow::Result<bool> {
+    let sql = create_rec_delete_query(param);
     let q = sqlx::query(&sql);
     let result = q.execute(db_pool).await?;
     Ok(result.rows_affected() == 1)
