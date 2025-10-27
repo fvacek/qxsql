@@ -1,7 +1,7 @@
 use crate::{
     appstate::{QxLockedAppState, QxSharedAppState},
     sql::{
-        sql_exec, sql_exec_transaction, sql_rec_delete, sql_rec_create, sql_rec_update, sql_select, DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecUpdateParam
+        sql_exec, sql_exec_transaction, sql_rec_create, sql_rec_delete, sql_rec_read, sql_rec_update, sql_select, DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam
     },
     sql_utils::SqlOperation,
 };
@@ -12,7 +12,7 @@ use shvrpc::{
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::sqlite::SqlitePoolOptions;
-use std::sync::OnceLock;
+use std::{sync::OnceLock};
 use tokio::sync::RwLock;
 
 use clap::Parser;
@@ -276,30 +276,6 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                 });
                 None
             }
-            "update" [None, Write, "{s:table,i:id,{s|i|b|t|n}:record,s:issuer}", "b"] (param: RecUpdateParam) => {
-                let mut resp = request.prepare_response().unwrap_or_default();
-                tokio::task::spawn(async move {
-                    let result = sql_rec_update(app_state, &param).await;
-                    let mut send_signal = false;
-                    match result {
-                        Ok(result) => {
-                            send_signal = result;
-                            resp.set_result(to_rpcvalue(&result).expect("serde should work"));
-                        },
-                        Err(e) => {
-                            resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("Update record error: {}", e)));
-                        }
-                    };
-                    client_cmd_tx.send_message(resp).unwrap_or_else(|err| log::error!("sql_select: Cannot send response ({err})"));
-                    if send_signal {
-                        let recchng = RecChng {table:param.table, id:param.id, record:Some(param.record), op: RecOp::Update, issuer:param.issuer };
-                        let rec = to_rpcvalue(&recchng).expect("serde should work");
-                        client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal("sql", "recchng", Some(rec)))
-                                        .unwrap_or_else(|err| log::error!("Cannot send signal ({err})"));
-                    }
-                });
-                None
-            }
             "create" [None, Write, "{s:table,{s|i|b|t|n}:record,s:issuer}", "i"] (param: RecInsertParam) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
@@ -317,6 +293,47 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
                     client_cmd_tx.send_message(resp).unwrap_or_else(|err| log::error!("sql_select: Cannot send response ({err})"));
                     if let Some(insert_id) = insert_id {
                         let recchng = RecChng {table:param.table, id:insert_id, record:Some(param.record), op: RecOp::Insert, issuer:param.issuer };
+                        let rec = to_rpcvalue(&recchng).expect("serde should work");
+                        client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal("sql", "recchng", Some(rec)))
+                                        .unwrap_or_else(|err| log::error!("Cannot send signal ({err})"));
+                    }
+                });
+                None
+            }
+            "read" [None, Read, "{s:table,{i}:id}", "{s|i|b|t|n}"] (param: RecReadParam) => {
+                let mut resp = request.prepare_response().unwrap_or_default();
+                tokio::task::spawn(async move {
+                    let result = sql_rec_read(app_state, &param).await;
+                    match result {
+                        Ok(record) => {
+                            let record = to_rpcvalue(&record).expect("serde should work");
+                            resp.set_result(record);
+                        },
+                        Err(e) => {
+                            resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("Read record error: {}", e)));
+                        }
+                    };
+                    client_cmd_tx.send_message(resp).unwrap_or_else(|err| log::error!("sql_select: Cannot send response ({err})"));
+                });
+                None
+            }
+            "update" [None, Write, "{s:table,i:id,{s|i|b|t|n}:record,s:issuer}", "b"] (param: RecUpdateParam) => {
+                let mut resp = request.prepare_response().unwrap_or_default();
+                tokio::task::spawn(async move {
+                    let result = sql_rec_update(app_state, &param).await;
+                    let mut send_signal = false;
+                    match result {
+                        Ok(result) => {
+                            send_signal = result;
+                            resp.set_result(to_rpcvalue(&result).expect("serde should work"));
+                        },
+                        Err(e) => {
+                            resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("Update record error: {}", e)));
+                        }
+                    };
+                    client_cmd_tx.send_message(resp).unwrap_or_else(|err| log::error!("sql_select: Cannot send response ({err})"));
+                    if send_signal {
+                        let recchng = RecChng {table:param.table, id:param.id, record:Some(param.record), op: RecOp::Update, issuer:param.issuer };
                         let rec = to_rpcvalue(&recchng).expect("serde should work");
                         client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal("sql", "recchng", Some(rec)))
                                         .unwrap_or_else(|err| log::error!("Cannot send signal ({err})"));
@@ -366,7 +383,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
     );
 
     shvclient::Client::new()
-        .app(DotAppNode::new("qxsql"))
+        .app(DotAppNode::new(env!("CARGO_PKG_NAME")))
         .mount(".app", dot_app_node)
         .mount("sql", sql_node)
         .with_app_state(app_state2)

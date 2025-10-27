@@ -167,6 +167,19 @@ impl TryFrom<&RpcValue> for RecInsertParam {
 }
 
 #[derive(Debug,Serialize,Deserialize)]
+pub struct RecReadParam {
+    pub table: String,
+    pub id: i64,
+}
+impl TryFrom<&RpcValue> for RecReadParam {
+    type Error = String;
+
+    fn try_from(value: &RpcValue) -> Result<Self, Self::Error> {
+        from_rpcvalue(value).map_err(|e| e.to_string())
+    }
+}
+
+#[derive(Debug,Serialize,Deserialize)]
 pub struct RecDeleteParam {
     pub table: String,
     pub id: i64,
@@ -196,6 +209,13 @@ pub struct ExecResult {
 pub struct SelectResult {
     pub fields: Vec<DbField>,
     pub rows: Vec<Vec<DbValue>>,
+}
+impl SelectResult {
+    pub fn record(&self, row: usize) -> Option<HashMap<String, DbValue>> {
+        self.rows.get(row).map(|row| {
+            row.iter().zip(self.fields.iter()).map(|(value, field)| (field.name.clone(), value.clone())).collect()
+        })
+    }
 }
 
 #[derive(Debug, Serialize,Deserialize, PartialEq)]
@@ -231,19 +251,27 @@ pub async fn sql_exec_transaction(db: &DbPool, query: &QueryAndParamsList) -> an
     }
 }
 
-pub async fn sql_rec_update(state: QxSharedAppState, param: &RecUpdateParam) -> anyhow::Result<bool> {
-    let db = state.read().await;
-    match &*db {
-        DbPool::Sqlite(pool) => sql_rec_update_sqlite(pool, param).await,
-        DbPool::Postgres(pool) => sql_rec_update_postgres(pool, param).await,
-    }
-}
-
 pub async fn sql_rec_create(state: QxSharedAppState, param: &RecInsertParam) -> anyhow::Result<i64> {
     let db = state.read().await;
     match &*db {
         DbPool::Sqlite(pool) => sql_rec_create_sqlite(pool, param).await,
         DbPool::Postgres(pool) => sql_rec_create_postgres(pool, param).await,
+    }
+}
+
+pub async fn sql_rec_read(state: QxSharedAppState, param: &RecReadParam) -> anyhow::Result<Option<HashMap<String, DbValue>>> {
+    let db = state.read().await;
+    match &*db {
+        DbPool::Sqlite(pool) => sql_rec_read_sqlite(pool, param).await,
+        DbPool::Postgres(pool) => sql_rec_read_postgres(pool, param).await,
+    }
+}
+
+pub async fn sql_rec_update(state: QxSharedAppState, param: &RecUpdateParam) -> anyhow::Result<bool> {
+    let db = state.read().await;
+    match &*db {
+        DbPool::Sqlite(pool) => sql_rec_update_sqlite(pool, param).await,
+        DbPool::Postgres(pool) => sql_rec_update_postgres(pool, param).await,
     }
 }
 
@@ -333,6 +361,20 @@ async fn sql_rec_create_postgres(db_pool: &Pool<Postgres>, param: &RecInsertPara
         id_i32 as i64
     });
     Ok(insert_id)
+}
+
+async fn sql_rec_read_sqlite(db_pool: &Pool<Sqlite>, param: &RecReadParam) -> anyhow::Result<Option<HashMap<String, DbValue>>> {
+    let sql = format!("SELECT * FROM {table} WHERE id = {id}", table = param.table, id = param.id);
+    let qp = QueryAndParams(sql, Default::default(), None);
+    let result = sql_select_sqlite(db_pool, &qp).await?;
+    Ok(result.record(0))
+}
+
+async fn sql_rec_read_postgres(db_pool: &Pool<Postgres>, param: &RecReadParam) -> anyhow::Result<Option<HashMap<String, DbValue>>> {
+    let sql = format!("SELECT * FROM {table} WHERE id = {id}", table = param.table, id = param.id);
+    let qp = QueryAndParams(sql, Default::default(), None);
+    let result = sql_select_postgres(db_pool, &qp).await?;
+    Ok(result.record(0))
 }
 
 fn create_rec_delete_query(param: &RecDeleteParam) -> String {
