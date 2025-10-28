@@ -3,23 +3,14 @@
 //! This library provides functionality to bridge SQL databases with the SHV protocol,
 //! allowing SQL operations to be performed via SHV RPC calls.
 
-pub mod appstate;
-pub mod config;
 pub mod sql;
 pub mod sql_utils;
-pub mod sql_impl;
 
 // Re-export commonly used types
-pub use appstate::{QxAppState, QxLockedAppState, QxSharedAppState};
-pub use config::{Config, DbConfig};
 pub use shvclient::AppState;
 pub use sql::{
     DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam,
     RecInsertParam, RecOp, RecReadParam, RecUpdateParam, SqlOperation
-};
-pub use sql_impl::{
-    sql_exec, sql_exec_transaction, sql_rec_delete, sql_rec_read,
-    sql_rec_update, sql_select, DbPool
 };
 pub use sql_utils::{
     replace_named_with_positional_params, postgres_query_positional_args_from_sqlite

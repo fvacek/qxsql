@@ -1,11 +1,11 @@
 use qxsqld::{
-    appstate::{QxLockedAppState, QxSharedAppState},
-    check_write_authorization, init_global_config, sql_exec, sql_exec_transaction,
-    sql_impl::QxSql,
+    check_write_authorization, init_global_config,
     sql::Sql,
-    sql_rec_delete, sql_rec_read, sql_rec_update, sql_select,
-    DbPool, DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam, SqlOperation
+    DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam, SqlOperation
 };
+use appstate::{QxLockedAppState, QxSharedAppState};
+use sql_impl::{QxSql, DbPool, sql_exec, sql_exec_transaction, sql_rec_delete, sql_rec_read, sql_rec_update, sql_select};
+
 use shvclient::appnodes::DotAppNode;
 
 use shvrpc::{
@@ -22,6 +22,10 @@ use shvproto::{FromRpcValue, RpcValue, ToRpcValue, to_rpcvalue};
 use shvrpc::util::parse_log_verbosity;
 use simple_logger::SimpleLogger;
 use url::Url;
+
+mod appstate;
+mod config;
+mod sql_impl;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -90,7 +94,7 @@ async fn main() -> shvrpc::Result<()> {
         let f = std::fs::File::open(config_path)?;
         serde_yaml::from_reader(f)?
     } else {
-        qxsqld::config::Config::default()
+        config::Config::default()
     };
 
     if let Some(url) = cli_opts.url {

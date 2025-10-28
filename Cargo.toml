@@ -9,7 +9,7 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "qxsqld"
-path = "src/bin/qxsqld.rs"
+path = "src/bin/qxsqld/main.rs"
 
 [dependencies]
 shvproto = { git = "https://github.com/silicon-heaven/libshvproto-rs", branch = "master", features = ["serde"]}

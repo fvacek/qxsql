@@ -9,8 +9,8 @@ use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
 use anyhow::{anyhow, bail};
 
 use crate::appstate::{QxSharedAppState};
-use crate::sql::{DbField, DbValue, ExecResult, QueryAndParams, QueryAndParamsList, RecDeleteParam, RecReadParam, RecUpdateParam, SelectResult, SqlInfo};
-use crate::sql_utils::{self, postgres_query_positional_args_from_sqlite};
+use qxsqld::sql::{DbField, DbValue, ExecResult, QueryAndParams, QueryAndParamsList, RecDeleteParam, RecReadParam, RecUpdateParam, SelectResult, SqlInfo};
+use qxsqld::sql_utils::{self, postgres_query_positional_args_from_sqlite};
 
 pub enum DbPool {
     Postgres(PgPool),
@@ -176,7 +176,7 @@ async fn sql_rec_delete_postgres(db_pool: &Pool<Postgres>, param: &RecDeletePara
 
 // Common logic for SQL execution
 fn parse_sql_info(query: &QueryAndParams) -> anyhow::Result<SqlInfo> {
-    match crate::sql_utils::parse_sql_info(query.query()) {
+    match qxsqld::sql_utils::parse_sql_info(query.query()) {
         Ok(sql_info) => {
             Ok(sql_info)
         },
@@ -339,8 +339,8 @@ fn db_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<DbVal
 mod tests {
 
     use super::*;
-    use crate::sql::{DateTime, SqlOperation};
-    use crate::sql_utils::{parse_sql_info};
+    use qxsqld::sql::{DateTime, SqlOperation};
+    use qxsqld::sql_utils::{parse_sql_info};
     use sqlx::sqlite::SqlitePoolOptions;
     use sqlx::postgres::PgPoolOptions;
     use log::warn;
@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_query_and_params_convenience_methods() {
-        let mut qp = QueryAndParams::new(
+        let mut qp = QueryAndParams(
             "SELECT * FROM users WHERE id = :id".to_string(),
             [("id".to_string(), DbValue::Int(1))].into_iter().collect(),
             None
@@ -443,8 +443,8 @@ mod tests {
         assert_eq!(qp.params().get("id"), Some(&DbValue::Int(1)));
 
         // Test mutable methods
-        *qp.query_mut() = "SELECT * FROM posts WHERE id = :id".to_string();
-        qp.params_mut().insert("id".to_string(), DbValue::Int(2));
+        qp.0 = "SELECT * FROM posts WHERE id = :id".to_string();
+        qp.1.insert("id".to_string(), DbValue::Int(2));
 
         assert_eq!(qp.query(), "SELECT * FROM posts WHERE id = :id");
         assert_eq!(qp.params().get("id"), Some(&DbValue::Int(2)));
@@ -1048,7 +1048,7 @@ mod tests {
 pub struct QxSql(pub QxSharedAppState);
 
 #[async_trait]
-impl crate::sql::Sql for QxSql {
+impl qxsqld::sql::Sql for QxSql {
     async fn create_record(&self, table: &str, record: &HashMap<String, DbValue>) -> anyhow::Result<i64> {
         let db = self.0.read().await;
         match &*db {
