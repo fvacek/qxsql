@@ -4,7 +4,7 @@ use qxsqld::{
     DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam, SqlOperation
 };
 use appstate::{QxLockedAppState, QxSharedAppState};
-use sql_impl::{QxSql, DbPool, sql_exec, sql_exec_transaction, sql_rec_delete, sql_rec_read, sql_rec_update, sql_select};
+use sql_impl::{QxSql, DbPool, sql_exec, sql_exec_transaction, sql_select};
 
 use shvclient::appnodes::DotAppNode;
 
@@ -22,6 +22,7 @@ use shvproto::{FromRpcValue, RpcValue, ToRpcValue, to_rpcvalue};
 use shvrpc::util::parse_log_verbosity;
 use simple_logger::SimpleLogger;
 use url::Url;
+
 
 mod appstate;
 mod config;
@@ -272,7 +273,8 @@ async fn main() -> shvrpc::Result<()> {
             "read" [None, Read, "{s:table,{i}:id}", "{s|i|b|t|n}"] (param: RecReadParam) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
-                    let result = sql_rec_read(app_state, &param).await;
+                    let qxsql = QxSql(app_state);
+                    let result = qxsql.read_record(&param.table, param.id).await;
                     match result {
                         Ok(record) => {
                             let record = to_rpcvalue(&record).expect("serde should work");
@@ -289,7 +291,8 @@ async fn main() -> shvrpc::Result<()> {
             "update" [None, Write, "{s:table,i:id,{s|i|b|t|n}:record,s:issuer}", "b"] (param: RecUpdateParam) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
-                    let result = sql_rec_update(app_state, &param).await;
+                    let qxsql = QxSql(app_state);
+                    let result = qxsql.update_record(&param.table, param.id, &param.record).await;
                     let mut send_signal = false;
                     match result {
                         Ok(result) => {
@@ -313,7 +316,8 @@ async fn main() -> shvrpc::Result<()> {
             "delete" [None, Write, "{s:table,i:id,s:issuer}", "b"] (param: RecDeleteParam) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
-                    let result = sql_rec_delete(app_state, &param).await;
+                    let qxsql = QxSql(app_state);
+                    let result = qxsql.delete_record(&param.table, param.id).await;
                     let was_deleted = match result {
                         Ok(result) => {
                             resp.set_result(to_rpcvalue(&result).expect("serde should work"));

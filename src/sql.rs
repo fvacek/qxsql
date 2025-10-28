@@ -239,4 +239,7 @@ pub struct RecChng {
 #[async_trait]
 pub trait Sql {
     async fn create_record(&self, table: &str, record: &HashMap<String, DbValue>) -> anyhow::Result<i64>;
+    async fn read_record(&self, table: &str, id: i64) -> anyhow::Result<Option<HashMap<String, DbValue>>>;
+    async fn update_record(&self, table: &str, id: i64, record: &HashMap<String, DbValue>) -> anyhow::Result<bool>;
+    async fn delete_record(&self, table: &str, id: i64) -> anyhow::Result<bool>;
 }
