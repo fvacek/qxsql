@@ -1,18 +1,18 @@
-use crate::{
+use qxsqld::{
     appstate::{QxLockedAppState, QxSharedAppState},
-    sql::{
-        sql_exec, sql_exec_transaction, sql_rec_create, sql_rec_delete, sql_rec_read, sql_rec_update, sql_select, DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam
-    },
-    sql_utils::SqlOperation,
+    check_write_authorization, init_global_config, sql_exec, sql_exec_transaction,
+    sql_impl::QxSql,
+    sql::Sql,
+    sql_rec_delete, sql_rec_read, sql_rec_update, sql_select,
+    DbPool, DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam, SqlOperation
 };
 use shvclient::appnodes::DotAppNode;
-use shvrpc::RpcMessageMetaTags;
+
 use shvrpc::{
     rpcmessage::{RpcError, RpcErrorCode},
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::sqlite::SqlitePoolOptions;
-use std::{sync::OnceLock};
 use tokio::sync::RwLock;
 
 use clap::Parser;
@@ -22,39 +22,6 @@ use shvproto::{FromRpcValue, RpcValue, ToRpcValue, to_rpcvalue};
 use shvrpc::util::parse_log_verbosity;
 use simple_logger::SimpleLogger;
 use url::Url;
-
-mod appstate;
-mod config;
-mod sql;
-mod sql_utils;
-
-// Global configuration for database access control
-#[derive(Debug)]
-struct GlobalConfig {
-    write_database_token: Option<String>,
-}
-
-static GLOBAL_CONFIG: OnceLock<GlobalConfig> = OnceLock::new();
-
-fn check_write_authorization(request: &shvrpc::RpcMessage) -> Result<(), RpcError> {
-    let config = GLOBAL_CONFIG
-        .get()
-        .expect("Global config should be initialized");
-    if let Some(write_token) = &config.write_database_token {
-        if let Some(user_id) = request.user_id()
-            && let Some(user_token) = user_id.split(';').next()
-            && user_token != write_token
-        {
-            return Ok(());
-        }
-
-        return Err(RpcError::new(
-            RpcErrorCode::PermissionDenied,
-            "Unauthorized",
-        ));
-    }
-    Ok(())
-}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -114,7 +81,7 @@ struct CustomParam {
 }
 
 #[tokio::main]
-pub(crate) async fn main() -> shvrpc::Result<()> {
+async fn main() -> shvrpc::Result<()> {
     let cli_opts = Opts::parse();
     init_logger(&cli_opts);
 
@@ -123,7 +90,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
         let f = std::fs::File::open(config_path)?;
         serde_yaml::from_reader(f)?
     } else {
-        crate::config::Config::default()
+        qxsqld::config::Config::default()
     };
 
     if let Some(url) = cli_opts.url {
@@ -149,13 +116,13 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
     // info!("Heart beat interval: {:?}", client_config.heartbeat_interval);
     info!("Connecting to app database: {}", config.db.url);
     let db = if config.db.url.scheme() == "sqlite" {
-        crate::sql::DbPool::Sqlite(
+        DbPool::Sqlite(
             SqlitePoolOptions::new()
                 .connect(config.db.url.as_str())
                 .await?,
         )
     } else {
-        crate::sql::DbPool::Postgres(PgPoolOptions::new().connect(config.db.url.as_str()).await?)
+        DbPool::Postgres(PgPoolOptions::new().connect(config.db.url.as_str()).await?)
     };
 
     let app_state: QxSharedAppState = AppState::new(RwLock::new(db));
@@ -166,10 +133,7 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
     // };
 
     // Initialize global configuration
-    GLOBAL_CONFIG
-        .set(GlobalConfig {
-            write_database_token: cli_opts.write_database_token.clone(),
-        })
+    init_global_config(cli_opts.write_database_token.clone())
         .expect("Global config should only be set once");
 
     let sql_node = shvclient::fixed_node!(
@@ -279,7 +243,8 @@ pub(crate) async fn main() -> shvrpc::Result<()> {
             "create" [None, Write, "{s:table,{s|i|b|t|n}:record,s:issuer}", "i"] (param: RecInsertParam) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
-                    let result = sql_rec_create(app_state, &param).await;
+                    let qxsql = QxSql(app_state);
+                    let result = qxsql.create_record(&param.table, &param.record).await;
                     let insert_id = match result {
                         Ok(result) => {
                             resp.set_result(to_rpcvalue(&result).expect("serde should work"));

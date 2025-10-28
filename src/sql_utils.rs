@@ -1,19 +1,5 @@
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum SqlOperation {
-    Insert,
-    Update,
-    Delete,
-    Other(String)
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SqlInfo {
-    pub operation: SqlOperation,
-    pub table_name: String,
-    pub is_returning_id: bool,
-}
+use crate::sql::{SqlInfo, SqlOperation};
 
 pub fn parse_sql_info(sql: &str) -> Result<SqlInfo, String> {
     let sql = sql.trim();
@@ -117,7 +103,7 @@ pub fn parse_sql_info(sql: &str) -> Result<SqlInfo, String> {
 /// let result = replace_named_with_positional_params(&keys, sql);
 /// assert_eq!(result, "SELECT * FROM users WHERE name = ?1 AND age > ?2");
 /// ```
-pub(crate) fn replace_named_with_positional_params(sql: &str, keys: &[&str], repl_char: char) -> String {
+pub fn replace_named_with_positional_params(sql: &str, keys: &[&str], repl_char: char) -> String {
     let mut result = String::with_capacity(sql.len());
     let mut chars = sql.chars().peekable();
     let mut in_single_quotes = false;
@@ -177,7 +163,7 @@ pub(crate) fn replace_named_with_positional_params(sql: &str, keys: &[&str], rep
     result
 }
 
-pub(crate) fn postgres_query_positional_args_from_sqlite(input: &str) -> String {
+pub fn postgres_query_positional_args_from_sqlite(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let mut param_counter = 1;
     let mut in_single_quote = false;

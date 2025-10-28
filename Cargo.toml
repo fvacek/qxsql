@@ -3,6 +3,14 @@ name = "qxsqld"
 version = "0.1.1"
 edition = "2024"
 
+[lib]
+name = "qxsqld"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qxsqld"
+path = "src/bin/qxsqld.rs"
+
 [dependencies]
 shvproto = { git = "https://github.com/silicon-heaven/libshvproto-rs", branch = "master", features = ["serde"]}
 shvrpc = { git = "https://github.com/silicon-heaven/libshvrpc-rs", branch = "master" }
@@ -24,6 +32,7 @@ regex = "1.9"
 simple_logger = { version = "5.0.0", features = ["stderr"] }
 duration-str = "0.17"
 chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1.89"
 
 # For local development
 # [patch."https://github.com/silicon-heaven/libshvproto-rs"]
