@@ -145,7 +145,7 @@ async fn main() -> shvrpc::Result<()> {
 
     let sql_node = shvclient::fixed_node!(
         sql_handler<QxLockedAppState>(request, client_cmd_tx, app_state) {
-            "select" [None, Read, "[s:query,{s|i|b|t|n}:params]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParams) => {
+            "query" [None, Read, "[s:query,{s|i|b|t|n}:params]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParams) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
                     let qxsql = QxSql(app_state);
