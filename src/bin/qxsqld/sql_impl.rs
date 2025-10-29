@@ -35,7 +35,9 @@ macro_rules! bind_db_values {
         for val in $params {
             q = match val {
                 DbValue::String(s) => q.bind(s),
+                DbValue::Blob(b) => q.bind(b),
                 DbValue::Int(i) => q.bind(i),
+                DbValue::Double(d) => q.bind(d),
                 DbValue::Bool(b) => q.bind(b),
                 DbValue::DateTime(dt) => q.bind(dt),
                 DbValue::Null => q.bind(None::<&str>),
