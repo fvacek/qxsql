@@ -576,16 +576,20 @@ mod tests {
         let qxsql = setup_test_sqlite_db().await.unwrap();
 
         // Create a table with various types
-        qxsql.exec("CREATE TABLE type_test (id INTEGER PRIMARY KEY, text_val TEXT, int_val INTEGER, bool_val BOOLEAN, null_val TEXT)", None).await.unwrap();
+        qxsql.exec("CREATE TABLE type_test (id INTEGER PRIMARY KEY, text_val TEXT, int_val INTEGER, bool_val BOOLEAN, null_val TEXT, datetime_val TEXT)", None).await.unwrap();
+
+        let fixed_offset = FixedOffset::east_opt(3600).unwrap(); // +01:00
+        let test_datetime = fixed_offset.with_ymd_and_hms(2023, 12, 25, 15, 30, 45).unwrap();
 
         let params = record_from_slice(&[
             ("text_val", "test string".into()),
             ("int_val", 42.into()),
             ("bool_val", true.into()),
             ("null_val", DbValue::Null),
+            ("datetime_val", DbValue::DateTime(test_datetime)),
         ]);
 
-        qxsql.exec("INSERT INTO type_test (text_val, int_val, bool_val, null_val) VALUES (:text_val, :int_val, :bool_val, :null_val)", Some(&params)).await.unwrap();
+        qxsql.exec("INSERT INTO type_test (text_val, int_val, bool_val, null_val, datetime_val) VALUES (:text_val, :int_val, :bool_val, :null_val, :datetime_val)", Some(&params)).await.unwrap();
 
         let result = qxsql.query("SELECT * FROM type_test", None).await.unwrap();
         assert_eq!(result.rows.len(), 1);
@@ -595,6 +599,7 @@ mod tests {
         assert!(matches!(row[2], DbValue::Int(_)));
         assert!(matches!(row[3], DbValue::Int(_))); // SQLite stores boolean as integer
         assert!(matches!(row[4], DbValue::Null));
+        assert!(matches!(row[5], DbValue::String(_))); // SQLite stores datetime as string
     }
 
     #[tokio::test]
@@ -623,7 +628,9 @@ mod tests {
 
         let row = &result.rows[0];
         assert_eq!(row[0], DbValue::String("Test Event".to_string()));
-        
+
+        assert_eq!(row[1].to_datetime().unwrap(), test_datetime);
+
         // SQLite stores datetime as string, so we expect a string back
         match &row[1] {
             DbValue::String(datetime_str) => {
@@ -656,7 +663,7 @@ mod tests {
         let qxsql = setup_test_sqlite_db().await.unwrap();
 
         // Create table for datetime tests
-        qxsql.exec("CREATE TABLE datetime_test (id INTEGER PRIMARY KEY, dt TEXT, description TEXT)", None).await.unwrap();
+        qxsql.exec("CREATE TABLE datetime_test (id INTEGER PRIMARY KEY, dt DATETIME, description TEXT)", None).await.unwrap();
 
         // Test different DateTime values
         let test_cases = vec![
@@ -700,7 +707,7 @@ mod tests {
         // Verify all records were stored properly
         for (expected_datetime, expected_desc) in &test_cases {
             let dt_str = result_map.get(*expected_desc).expect("Description should exist in results");
-            
+
             // Verify the datetime was stored as a string representation
             // Basic validation that it looks like a datetime string
             assert!(dt_str.len() > 10); // Should be longer than just a date

@@ -35,6 +35,13 @@ impl DbValue {
             _ => false,
         }
     }
+    pub fn to_datetime(&self) -> Option<DateTime> {
+        match self {
+            DbValue::DateTime(value) => Some(*value),
+            DbValue::String(value) => value.parse().ok(),
+            _ => None,
+        }
+    }
 }
 impl From<i32> for DbValue {
     fn from(value: i32) -> Self {
