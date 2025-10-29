@@ -1,10 +1,20 @@
 use std::collections::HashMap;
 
+use async_trait::async_trait;
 use chrono::FixedOffset;
 use serde::{Deserialize, Serialize};
 use shvproto::{RpcValue, from_rpcvalue};
 
-
+#[async_trait]
+pub trait SqlProvider {
+    async fn query(&self, query: &str, params: Option<&Record>) -> anyhow::Result<SelectResult>;
+    async fn exec(&self, query: &str, params: Option<&Record>) -> anyhow::Result<ExecResult>;
+    async fn list_records(&self, table: &str, fields: Option<&[&str]>, ids_greater_than: Option<i64>, limit: Option<i64>) -> anyhow::Result<Vec<Record>>;
+    async fn create_record(&self, table: &str, record: &Record) -> anyhow::Result<i64>;
+    async fn read_record(&self, table: &str, id: i64) -> anyhow::Result<Option<Record>>;
+    async fn update_record(&self, table: &str, id: i64, record: &Record) -> anyhow::Result<bool>;
+    async fn delete_record(&self, table: &str, id: i64) -> anyhow::Result<bool>;
+}
 
 pub type DateTime = chrono::DateTime<FixedOffset>;
 
@@ -60,19 +70,13 @@ impl From<DateTime> for DbValue {
     }
 }
 
+pub type Record = HashMap<String, DbValue>;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SqlOperation {
     Insert,
     Update,
     Delete,
-    Other(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SqlInfo {
-    pub operation: SqlOperation,
-    pub table_name: String,
-    pub is_returning_id: bool,
 }
 
 /// Query and parameters tuple struct.
@@ -84,8 +88,10 @@ pub struct SqlInfo {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct QueryAndParams(
     pub String,                                     // query
-    #[serde(default)] pub HashMap<String, DbValue>, // params
-    #[serde(default)] pub Option<String>,           // issuer
+    #[serde(default)]
+    pub Option<Record>, // params
+    #[serde(default)]
+    pub Option<String>,           // issuer
 );
 
 impl QueryAndParams {
@@ -93,8 +99,8 @@ impl QueryAndParams {
         &self.0
     }
 
-    pub fn params(&self) -> &HashMap<String, DbValue> {
-        &self.1
+    pub fn params(&self) -> Option<&Record> {
+        self.1.as_ref()
     }
 
     pub fn issuer(&self) -> Option<&str> {
@@ -124,7 +130,7 @@ impl TryFrom<&RpcValue> for QueryAndParamsList {
 pub struct RecUpdateParam {
     pub table: String,
     pub id: i64,
-    pub record: HashMap<String, DbValue>,
+    pub record: Record,
     #[serde(default)]
     pub issuer: String,
 }
@@ -139,7 +145,7 @@ impl TryFrom<&RpcValue> for RecUpdateParam {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RecInsertParam {
     pub table: String,
-    pub record: HashMap<String, DbValue>,
+    pub record: Record,
     #[serde(default)]
     pub issuer: String,
 }
@@ -187,8 +193,7 @@ pub struct DbField {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExecResult {
     pub rows_affected: i64,
-    pub insert_id: i64,
-    pub info: SqlInfo,
+    pub insert_id: Option<i64>,
 }
 #[derive(Debug, Serialize, Deserialize, Default, PartialEq)]
 pub struct SelectResult {
@@ -196,7 +201,7 @@ pub struct SelectResult {
     pub rows: Vec<Vec<DbValue>>,
 }
 impl SelectResult {
-    pub fn record(&self, row: usize) -> Option<HashMap<String, DbValue>> {
+    pub fn record(&self, row: usize) -> Option<Record> {
         self.rows.get(row).map(|row| {
             row.iter()
                 .zip(self.fields.iter())
@@ -217,7 +222,7 @@ pub enum RecOp {
 pub struct RecChng {
     pub table: String,
     pub id: i64,
-    pub record: Option<HashMap<String, DbValue>>,
+    pub record: Option<Record>,
     pub op: RecOp,
     pub issuer: String,
 }

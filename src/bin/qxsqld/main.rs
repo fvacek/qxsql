@@ -1,10 +1,10 @@
 use std::sync::OnceLock;
 
 use qxsqld::{
-    DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam, SqlOperation, SqlProvider
+    sql::SqlProvider, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam
 };
 use appstate::{QxLockedAppState, QxSharedAppState};
-use sql_impl::{QxSql, DbPool, sql_exec, sql_exec_transaction, sql_select};
+use sql_impl::{QxSql, DbPool, sql_exec_transaction};
 
 use shvclient::appnodes::DotAppNode;
 
@@ -146,8 +146,8 @@ async fn main() -> shvrpc::Result<()> {
             "select" [None, Read, "[s:query,{s|i|b|t|n}:params]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParams) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
-                    let state = app_state.read().await;
-                    let result = sql_select(&state, &query).await;
+                    let qxsql = QxSql(app_state);
+                    let result = qxsql.query(query.query(), query.params()).await;
                     match result {
                         Ok(result) => resp.set_result(to_rpcvalue(&result).expect("serde should work")),
                         Err(e) => resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("SQL error: {}", e))),
@@ -164,65 +164,14 @@ async fn main() -> shvrpc::Result<()> {
                     return Some(Err(auth_error));
                 }
                 tokio::task::spawn(async move {
-                    let state = app_state.read().await;
-                    let result = sql_exec(&state, &query).await;
-                    let recchng = match result {
-                        Ok(result) => {
-                            resp.set_result(to_rpcvalue(&result).expect("serde should work"));
-                            if query.issuer().is_some() {
-                                match result.info.operation {
-                                    SqlOperation::Insert => {
-                                        let record = query.params().clone();
-                                        Some(RecChng {
-                                            table: result.info.table_name,
-                                            id: result.insert_id,
-                                            record: Some(record),
-                                            op: RecOp::Insert,
-                                            issuer: query.issuer().unwrap_or_default().to_string(),
-                                        })
-                                    }
-                                    SqlOperation::Update => {
-                                        let id = if let Some(DbValue::Int(id)) = query.params().get("id") { *id } else { 0 };
-                                        let mut record = query.params().clone();
-                                        record.remove("id");
-                                        Some(RecChng {
-                                            table: result.info.table_name,
-                                            id,
-                                            record: Some(record),
-                                            op: RecOp::Update,
-                                            issuer: query.issuer().unwrap_or_default().to_string(),
-                                        })
-                                    }
-                                    SqlOperation::Delete => {
-                                        let id = if let Some(DbValue::Int(id)) = query.params().get("id") { *id } else { 0 };
-                                        Some(RecChng {
-                                            table: result.info.table_name,
-                                            id,
-                                            record: None,
-                                            op: RecOp::Delete,
-                                            issuer: query.issuer().unwrap_or_default().to_string(),
-                                        })
-                                    }
-                                    SqlOperation::Other(_) => {
-                                        None
-                                    }
-                                }
-                            } else {
-                                None
-                            }
-                        }
-                        Err(e) => {
-                            resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("SQL error: {}", e)));
-                            None
-                        },
+                    let qxsql = QxSql(app_state);
+                    let result = qxsql.exec(query.query(), query.params()).await;
+                    match result {
+                        Ok(result) => resp.set_result(to_rpcvalue(&result).expect("serde should work")),
+                        Err(e) => resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("SQL error: {}", e))),
                     };
                     if let Err(e) = client_cmd_tx.send_message(resp) {
                         error!("sql_exec: Cannot send response ({e})");
-                    }
-                    if let Some(recchng) = recchng {
-                        let rec = to_rpcvalue(&recchng).expect("serde should work");
-                        client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal("sql", "recchng", Some(rec)))
-                                        .unwrap_or_else(|err| log::error!("Cannot send signal ({err})"));
                     }
                 });
                 None

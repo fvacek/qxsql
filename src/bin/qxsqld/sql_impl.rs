@@ -1,34 +1,19 @@
 use std::backtrace::Backtrace;
-use std::collections::HashMap;
 
 use async_trait::async_trait;
-use log::error;
+use log::{error};
 
 use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
-use anyhow::{anyhow, bail};
+use anyhow::{anyhow};
 
 use crate::appstate::{QxSharedAppState};
-use qxsqld::sql::{DbField, DbValue, ExecResult, QueryAndParams, QueryAndParamsList, SelectResult, SqlInfo};
+use qxsqld::sql::{DbField, DbValue, ExecResult, QueryAndParamsList, Record, SelectResult};
 use qxsqld::sql_utils::{self, postgres_query_positional_args_from_sqlite};
 
 pub enum DbPool {
     Postgres(PgPool),
     Sqlite(SqlitePool),
-}
-
-pub async fn sql_select(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<SelectResult> {
-    match db {
-        DbPool::Sqlite(pool) => sql_select_sqlite(pool, query).await,
-        DbPool::Postgres(pool) => sql_select_postgres(pool, query).await,
-    }
-}
-
-pub async fn sql_exec(db: &DbPool, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
-    match db {
-        DbPool::Sqlite(pool) => sql_exec_sqlite(pool, query).await,
-        DbPool::Postgres(pool) => sql_exec_postgres(pool, query).await,
-    }
 }
 
 pub async fn sql_exec_transaction(db: &DbPool, query: &QueryAndParamsList) -> anyhow::Result<()> {
@@ -38,11 +23,7 @@ pub async fn sql_exec_transaction(db: &DbPool, query: &QueryAndParamsList) -> an
     }
 }
 
-fn prepare_sql_with_params(query: &QueryAndParams, repl_char: char) -> String {
-    prepare_sql_with_query_params(query.query(), query.params(), repl_char)
-}
-
-fn prepare_sql_with_query_params(query: &str, params: &HashMap<String, DbValue>, repl_char: char) -> String {
+fn prepare_sql_with_query_params(query: &str, params: &Record, repl_char: char) -> String {
     let keys = params.keys().map(|s| s.as_str()).collect::<Vec<_>>();
     sql_utils::replace_named_with_positional_params(query, &keys, repl_char)
 }
@@ -64,126 +45,45 @@ macro_rules! bind_db_values {
     }};
 }
 
-fn create_rec_update_query(table: &str, id: i64, record: &HashMap<String, DbValue>) -> String {
-    let keys = record.keys().map(|k| format!("{k} = :{k}")).collect::<Vec<_>>().join(", ");
-    format!("UPDATE {table} SET {keys} WHERE {table}.id={id}")
-}
 
-async fn sql_rec_update_sqlite(db_pool: &Pool<Sqlite>, table: &str, id: i64, record: &HashMap<String, DbValue>) -> anyhow::Result<bool> {
-    let sql = create_rec_update_query(table, id, record);
-    let q = sqlx::query(&sql);
-    let q = bind_db_values!(q, record.values());
-    let result = q.execute(db_pool).await?;
-    let rows_affected = result.rows_affected() as i64;
-    Ok (rows_affected == 1)
-}
 
-async fn sql_rec_update_postgres(db_pool: &Pool<Postgres>, table: &str, id: i64, record: &HashMap<String, DbValue>) -> anyhow::Result<bool> {
-    let sql = create_rec_update_query(table, id, record);
-    let sql = prepare_sql_with_query_params(&sql, &record, '$');
-    let q = sqlx::query(&sql);
-    let q = bind_db_values!(q, record.values());
-    let result = q.execute(db_pool).await?;
-    let rows_affected = result.rows_affected() as i64;
-    Ok (rows_affected == 1)
-}
 
-fn create_rec_create_query(table: &str, record: &HashMap<String, DbValue>) -> String {
-    let keys = record.keys().map(|k| k.to_string()).collect::<Vec<_>>().join(", ");
-    let vals = record.keys().map(|k| format!(":{k}")).collect::<Vec<_>>().join(", ");
-    format!("INSERT INTO {table} ({keys}) VALUES ({vals}) RETURNING id")
-}
 
-async fn sql_rec_create_sqlite(db_pool: &Pool<Sqlite>, table: &str, record: &HashMap<String, DbValue>) -> anyhow::Result<i64> {
-    let sql = create_rec_create_query(table, &record);
-    let q = sqlx::query(&sql);
-    let q = bind_db_values!(q, record.values());
-    let row = q.fetch_one(db_pool).await?;
-    let insert_id = row.get(0);
-    Ok(insert_id)
-}
 
-async fn sql_rec_create_postgres(db_pool: &Pool<Postgres>, table: &str, record: &HashMap<String, DbValue>) -> anyhow::Result<i64> {
-    let sql = create_rec_create_query(table, &record);
-    let sql = prepare_sql_with_query_params(&sql, &record, '$');
-    let q = sqlx::query(&sql);
-    let q = bind_db_values!(q, record.values());
-    let row = q.fetch_one(db_pool).await?;
-    let insert_id: i64 = row.try_get(0).unwrap_or_else(|_| {
-        let id_i32: i32 = row.get(0);
-        id_i32 as i64
-    });
-    Ok(insert_id)
-}
 
-async fn sql_rec_read_sqlite(db_pool: &Pool<Sqlite>, table: &str, id: i64) -> anyhow::Result<Option<HashMap<String, DbValue>>> {
-    let sql = format!("SELECT * FROM {table} WHERE id = {id}");
-    let qp = QueryAndParams(sql, Default::default(), None);
-    let result = sql_select_sqlite(db_pool, &qp).await?;
-    Ok(result.record(0))
-}
 
-async fn sql_rec_read_postgres(db_pool: &Pool<Postgres>, table: &str, id: i64) -> anyhow::Result<Option<HashMap<String, DbValue>>> {
-    let sql = format!("SELECT * FROM {table} WHERE id = {id}");
-    let qp = QueryAndParams(sql, Default::default(), None);
-    let result = sql_select_postgres(db_pool, &qp).await?;
-    Ok(result.record(0))
-}
 
-fn create_rec_delete_query(table: &str, id: i64) -> String {
-    format!("DELETE FROM {table} WHERE id = {id}")
-}
 
-async fn sql_rec_delete_sqlite(db_pool: &Pool<Sqlite>, table: &str, id: i64) -> anyhow::Result<bool> {
-    let sql = create_rec_delete_query(table, id);
-    let q = sqlx::query(&sql);
-    let result = q.execute(db_pool).await?;
-    Ok(result.rows_affected() == 1)
-}
 
-async fn sql_rec_delete_postgres(db_pool: &Pool<Postgres>, table: &str, id: i64) -> anyhow::Result<bool> {
-    let sql = create_rec_delete_query(table, id);
-    let q = sqlx::query(&sql);
-    let result = q.execute(db_pool).await?;
-    Ok(result.rows_affected() == 1)
-}
 
-// Common logic for SQL execution
-fn parse_sql_info(query: &QueryAndParams) -> anyhow::Result<SqlInfo> {
-    match qxsqld::sql_utils::parse_sql_info(query.query()) {
-        Ok(sql_info) => {
-            Ok(sql_info)
-        },
-        Err(e) => {
-            bail!("sql_exec: parse SQL query error: {}", e)
-        }
-    }
-}
+
+
+
+
+
+
+
+
+
+
 
 macro_rules! sql_exec_impl {
-    ($db_pool:expr, $query:expr, $repl_char:expr) => {{
-        let sql = prepare_sql_with_params($query, $repl_char);
+    ($db_pool:expr, $query:expr, $params:expr, $repl_char:expr) => {{
+        let sql = prepare_sql_with_query_params($query, $params, $repl_char);
         let q = sqlx::query(&sql);
-        let q = bind_db_values!(q, $query.params().values());
-        let info = parse_sql_info($query)?;
-        if info.is_returning_id {
-            let row = q.fetch_one($db_pool).await.map_err(sqlx2_to_anyhow)?;
-            let insert_id = row.get(0);
-            Ok(ExecResult { rows_affected: 1, insert_id, info })
-        } else {
-            let result = q.execute($db_pool).await?;
-            Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: 0, info })
-        }
+        let q = bind_db_values!(q, $params.values());
+        q.execute($db_pool).await?
     }};
 }
 
-async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
-    sql_exec_impl!(db_pool, query, '?')
-
+async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &str, params: &Record) -> anyhow::Result<ExecResult> {
+    let result = sql_exec_impl!(db_pool, query, params, '?');
+    Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: Some(result.last_insert_rowid()) })
 }
 
-async fn sql_exec_postgres(db_pool: &Pool<Postgres>, query: &QueryAndParams) -> anyhow::Result<ExecResult> {
-    sql_exec_impl!(db_pool, query, '$')
+async fn sql_exec_postgres(db_pool: &Pool<Postgres>, query: &str, params: &Record) -> anyhow::Result<ExecResult> {
+    let result = sql_exec_impl!(db_pool, query, params, '?');
+    Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: None })
 }
 
 async fn sql_exec_transaction_sqlite(db_pool: &Pool<Sqlite>, query_list: &QueryAndParamsList) -> anyhow::Result<()> {
@@ -231,18 +131,18 @@ where
     Ok(result)
 }
 
-async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &QueryAndParams) -> anyhow::Result<SelectResult> {
-    let sql = prepare_sql_with_params(query, '?');
+async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &str, params: &Record) -> anyhow::Result<SelectResult> {
+    let sql = prepare_sql_with_query_params(query, params, '?');
     let q = sqlx::query(&sql);
-    let q = bind_db_values!(q, query.params().values());
+    let q = bind_db_values!(q, params.values());
     let rows = q.fetch_all(db_pool).await?;
     process_rows(&rows, db_value_from_sqlite_row)
 }
 
-async fn sql_select_postgres(db_pool: &Pool<Postgres>, query: &QueryAndParams) -> anyhow::Result<SelectResult> {
-    let sql = prepare_sql_with_params(query, '$');
+async fn sql_select_postgres(db_pool: &Pool<Postgres>, query: &str, params: &Record) -> anyhow::Result<SelectResult> {
+    let sql = prepare_sql_with_query_params(query, params, '$');
     let q = sqlx::query(&sql);
-    let q = bind_db_values!(q, query.params().values());
+    let q = bind_db_values!(q, params.values());
     let rows = q.fetch_all(db_pool).await?;
     process_rows(&rows, db_value_from_postgres_row)
 }
@@ -252,10 +152,7 @@ fn sqlx_to_anyhow(err: Box<dyn std::error::Error + Send + Sync>) -> anyhow::Erro
     anyhow!("SQL error: {}", err)
 }
 
-fn sqlx2_to_anyhow(err: sqlx::Error) -> anyhow::Error {
-    error!("SQL Error: {err}\nbacktrace: {}", Backtrace::capture());
-    anyhow!("SQL error: {}", err)
-}
+
 
 // Helper function to determine if a type is text-based
 fn is_text_type(type_name: &str) -> bool {
@@ -309,36 +206,107 @@ fn db_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<DbVal
     }
 }
 
+enum ListId {
+    IdIsEqual(i64),
+    IdsGreaterThan(i64),
+    None
+}
+impl ListId {
+    pub fn new_is_equal(id: Option<i64>) -> Self {
+        match id {
+            Some(id) => ListId::IdIsEqual(id),
+            None => ListId::None,
+        }
+    }
+    pub fn new_greater_than(id: Option<i64>) -> Self {
+        match id {
+            Some(id) => ListId::IdsGreaterThan(id),
+            None => ListId::None,
+        }
+    }
+}
+
 pub struct QxSql(pub QxSharedAppState);
+impl QxSql {
+    async fn list_records_impl(
+        &self, table: &str, fields: Option<&[&str]>,
+        id: ListId,
+        limit: Option<i64>,
+    ) -> anyhow::Result<Vec<Record>> {
+        let fields_str = fields.unwrap_or(&["*"]).join(", ");
+        let mut qs = format!("SELECT {} FROM {}", fields_str, table);
+        match id {
+            ListId::IdIsEqual(id) => {
+                qs.push_str(&format!(" WHERE id = {}", id));
+            },
+            ListId::IdsGreaterThan(id) => {
+                qs.push_str(&format!(" WHERE id > {}", id));
+            },
+            ListId::None => {}
+        }
+        if let Some(limit) = limit {
+            qs.push_str(&format!(" LIMIT {}", limit));
+        }
+        let result = qxsqld::sql::SqlProvider::query(self, &qs, None).await?;
+        Ok((0..result.rows.len())
+            .filter_map(|i| result.record(i))
+            .collect())
+    }
+}
 
 #[async_trait]
-impl qxsqld::SqlProvider for QxSql {
-    async fn create_record(&self, table: &str, record: &HashMap<String, DbValue>) -> anyhow::Result<i64> {
+impl qxsqld::sql::SqlProvider for QxSql {
+    async fn query(&self, query: &str, params: Option<&Record>) -> anyhow::Result<SelectResult> {
         let db = self.0.read().await;
+        let empty_params = Record::default();
+        let params = params.unwrap_or(&empty_params);
         match &*db {
-            DbPool::Sqlite(pool) => sql_rec_create_sqlite(pool, table, record).await,
-            DbPool::Postgres(pool) => sql_rec_create_postgres(pool, table, record).await,
+            DbPool::Sqlite(pool) => sql_select_sqlite(&pool, query, params).await,
+            DbPool::Postgres(pool) => sql_select_postgres(&pool, query, params).await,
         }
     }
-    async fn read_record(&self, table: &str, id: i64) -> anyhow::Result<Option<HashMap<String, DbValue>>> {
+    async fn exec(&self, query: &str, params: Option<&Record>) -> anyhow::Result<ExecResult> {
         let db = self.0.read().await;
+        let empty_params = Record::default();
+        let params = params.unwrap_or(&empty_params);
         match &*db {
-            DbPool::Sqlite(pool) => sql_rec_read_sqlite(pool, table, id).await,
-            DbPool::Postgres(pool) => sql_rec_read_postgres(pool, table, id).await,
+            DbPool::Sqlite(pool) => sql_exec_sqlite(&pool, query, params).await,
+            DbPool::Postgres(pool) => sql_exec_postgres(&pool, query, params).await,
         }
     }
-    async fn update_record(&self, table: &str, id: i64, record: &HashMap<String, DbValue>) -> anyhow::Result<bool> {
-        let db = self.0.read().await;
-        match &*db {
-            DbPool::Sqlite(pool) => sql_rec_update_sqlite(pool, table, id, record).await,
-            DbPool::Postgres(pool) => sql_rec_update_postgres(pool, table, id, record).await,
-        }
+
+    async fn list_records(&self, table: &str, fields: Option<&[&str]>, ids_greater_than: Option<i64>, limit: Option<i64>) -> anyhow::Result<Vec<Record>> {
+        self.list_records_impl(table, fields, ListId::new_greater_than(ids_greater_than), limit).await
+    }
+
+    async fn create_record(&self, table: &str, record: &Record) -> anyhow::Result<i64> {
+        let keys = record.keys().map(|k| k.to_string()).collect::<Vec<_>>().join(", ");
+        let vals = record.keys().map(|k| format!(":{k}")).collect::<Vec<_>>().join(", ");
+        let query = format!("INSERT INTO {table} ({keys}) VALUES ({vals}) RETURNING id");
+        self.query(&query, None).await.and_then(|table| {
+            if let DbValue::Int(id) = table.rows[0][0] {
+                Ok(id)
+            } else {
+                Err(anyhow!("Insert should return int64 value type"))
+            }
+        })
+    }
+    async fn read_record(&self, table: &str, id: i64) -> anyhow::Result<Option<Record>> {
+        let records = self.list_records_impl(table, None, ListId::new_is_equal(Some(id)), None).await?;
+        Ok(records.into_iter().next())
+    }
+
+    async fn update_record(&self, table: &str, id: i64, record: &Record) -> anyhow::Result<bool> {
+        let key_vals = record.keys().map(|k| format!("{k} = :{k}")).collect::<Vec<_>>().join(", ");
+        let query = format!("UPDATE {table} SET {key_vals} WHERE id = {id}");
+        self.exec(&query, Some(record)).await.and_then(|exec_result| {
+            Ok(exec_result.rows_affected == 1)
+        })
     }
     async fn delete_record(&self, table: &str, id: i64) -> anyhow::Result<bool> {
-        let db = self.0.read().await;
-        match &*db {
-            DbPool::Sqlite(pool) => sql_rec_delete_sqlite(pool, table, id).await,
-            DbPool::Postgres(pool) => sql_rec_delete_postgres(pool, table, id).await,
-        }
+        let query = format!("DELETE FROM {table} WHERE id = {id}");
+        self.exec(&query, None).await.and_then(|exec_result| {
+            Ok(exec_result.rows_affected == 1)
+        })
     }
 }
