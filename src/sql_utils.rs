@@ -100,7 +100,7 @@ pub fn parse_sql_info(sql: &str) -> Result<SqlInfo, String> {
 /// use qxsqld::replace_named_with_positional_params;
 /// let keys = vec!["name", "age"];
 /// let sql = "SELECT * FROM users WHERE name = :name AND age > :age";
-/// let result = replace_named_with_positional_params(&keys, sql);
+/// let result = replace_named_with_positional_params(sql, &keys, '?');
 /// assert_eq!(result, "SELECT * FROM users WHERE name = ?1 AND age > ?2");
 /// ```
 pub fn replace_named_with_positional_params(sql: &str, keys: &[&str], repl_char: char) -> String {
