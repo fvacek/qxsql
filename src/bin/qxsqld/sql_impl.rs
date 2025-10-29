@@ -45,28 +45,6 @@ macro_rules! bind_db_values {
     }};
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 macro_rules! sql_exec_impl {
     ($db_pool:expr, $query:expr, $params:expr, $repl_char:expr) => {{
         let sql = prepare_sql_with_query_params($query, $params, $repl_char);
@@ -312,7 +290,6 @@ mod tests {
     use qxsqld::sql::{record_from_slice, SqlProvider};
     use sqlx::sqlite::SqlitePoolOptions;
     use tokio::sync::RwLock;
-    use std::collections::HashMap;
 
     async fn setup_test_sqlite_db() -> anyhow::Result<QxSql> {
         let pool = SqlitePoolOptions::new()
@@ -360,8 +337,7 @@ mod tests {
     async fn test_query_with_params() {
         let qxsql = setup_test_sqlite_db().await.unwrap();
 
-        let mut params = HashMap::new();
-        params.insert("min_age".to_string(), DbValue::Int(30));
+        let params = record_from_slice(&[("min_age", 30.into())]);
 
         let result = qxsql.query("SELECT name FROM users WHERE age >= :min_age", Some(&params)).await.unwrap();
 
@@ -374,11 +350,12 @@ mod tests {
     async fn test_exec_insert() {
         let qxsql = setup_test_sqlite_db().await.unwrap();
 
-        let mut params = HashMap::new();
-        params.insert("name".to_string(), DbValue::String("Alice".to_string()));
-        params.insert("email".to_string(), DbValue::String("alice@test.com".to_string()));
-        params.insert("age".to_string(), DbValue::Int(28));
-        params.insert("active".to_string(), DbValue::Bool(true));
+        let params = record_from_slice(&[
+            ("name", "Alice".into()),
+            ("email", "alice@test.com".into()),
+            ("age", 28.into()),
+            ("active", true.into()),
+        ]);
 
         let result = qxsql.exec("INSERT INTO users (name, email, age, active) VALUES (:name, :email, :age, :active)", Some(&params)).await.unwrap();
 
@@ -390,8 +367,7 @@ mod tests {
     #[tokio::test]
     async fn test_exec_update() {
         let qxsql = setup_test_sqlite_db().await.unwrap();
-        let mut params = HashMap::new();
-        params.insert("new_email".to_string(), DbValue::String("john.updated@test.com".to_string()));
+        let params = record_from_slice(&[("new_email", "john.updated@test.com".into())]);
         let result = qxsql.exec("UPDATE users SET email = :new_email WHERE name = 'John'", Some(&params)).await.unwrap();
         assert_eq!(result.rows_affected, 1);
     }
@@ -467,9 +443,10 @@ mod tests {
     async fn test_update_record() {
         let qxsql = setup_test_sqlite_db().await.unwrap();
 
-        let mut record = HashMap::new();
-        record.insert("email".to_string(), DbValue::String("john.new@test.com".to_string()));
-        record.insert("age".to_string(), DbValue::Int(31));
+        let record = record_from_slice(&[
+            ("email", "john.new@test.com".into()),
+            ("age", 31.into()),
+        ]);
 
         let updated = qxsql.update_record("users", 1, &record).await.unwrap();
 
@@ -485,8 +462,7 @@ mod tests {
     async fn test_update_record_not_found() {
         let qxsql = setup_test_sqlite_db().await.unwrap();
 
-        let mut record = HashMap::new();
-        record.insert("email".to_string(), DbValue::String("notfound@test.com".to_string()));
+        let record = record_from_slice(&[("email", "notfound@test.com".into())]);
 
         let updated = qxsql.update_record("users", 999, &record).await.unwrap();
 
@@ -582,8 +558,7 @@ mod tests {
         let result = qxsql.read_record("nonexistent_table", 1, None).await;
         assert!(result.is_err());
 
-        let mut record = HashMap::new();
-        record.insert("name".to_string(), DbValue::String("test".to_string()));
+        let record = record_from_slice(&[("name", "test".into())]);
 
         let result = qxsql.create_record("nonexistent_table", &record).await;
         assert!(result.is_err());
@@ -602,11 +577,12 @@ mod tests {
         // Create a table with various types
         qxsql.exec("CREATE TABLE type_test (id INTEGER PRIMARY KEY, text_val TEXT, int_val INTEGER, bool_val BOOLEAN, null_val TEXT)", None).await.unwrap();
 
-        let mut params = HashMap::new();
-        params.insert("text_val".to_string(), DbValue::String("test string".to_string()));
-        params.insert("int_val".to_string(), DbValue::Int(42));
-        params.insert("bool_val".to_string(), DbValue::Bool(true));
-        params.insert("null_val".to_string(), DbValue::Null);
+        let params = record_from_slice(&[
+            ("text_val", "test string".into()),
+            ("int_val", 42.into()),
+            ("bool_val", true.into()),
+            ("null_val", DbValue::Null),
+        ]);
 
         qxsql.exec("INSERT INTO type_test (text_val, int_val, bool_val, null_val) VALUES (:text_val, :int_val, :bool_val, :null_val)", Some(&params)).await.unwrap();
 
