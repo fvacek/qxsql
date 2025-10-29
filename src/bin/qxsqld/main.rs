@@ -121,20 +121,8 @@ async fn main() -> shvrpc::Result<()> {
     // info!("Heart beat interval: {:?}", client_config.heartbeat_interval);
     info!("Connecting to app database: {}", config.db.url);
     let db = if config.db.url.scheme() == "sqlite" {
-        #[cfg(test)]
-        let mut options = SqlitePoolOptions::new();
-
-        #[cfg(not(test))]
-        let options = SqlitePoolOptions::new();
-
-        // Limit max connections to 1 for in-memory SQLite databases in test builds
-        #[cfg(test)]
-        if config.db.url.as_str().contains(":memory:") {
-            options = options.max_connections(1);
-        }
-
         DbPool::Sqlite(
-            options
+            SqlitePoolOptions::new()
                 .connect(config.db.url.as_str())
                 .await?,
         )

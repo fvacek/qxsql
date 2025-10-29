@@ -27,7 +27,15 @@ pub enum DbValue {
     DateTime(DateTime),
     Null,
 }
-
+impl DbValue {
+    pub fn to_bool(&self) -> bool {
+        match self {
+            DbValue::Bool(value) => *value,
+            DbValue::Int(value) => *value != 0,
+            _ => false,
+        }
+    }
+}
 impl From<i32> for DbValue {
     fn from(value: i32) -> Self {
         DbValue::Int(value as i64)
@@ -71,6 +79,11 @@ impl From<DateTime> for DbValue {
 }
 
 pub type Record = HashMap<String, DbValue>;
+pub fn record_from_slice(arr: &[(&str, DbValue)]) -> Record {
+    arr.iter()
+        .map(|(key, value)| (key.to_string(), value.clone()))
+        .collect()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SqlOperation {
