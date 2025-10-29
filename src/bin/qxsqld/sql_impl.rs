@@ -312,7 +312,7 @@ fn db_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<DbVal
 pub struct QxSql(pub QxSharedAppState);
 
 #[async_trait]
-impl qxsqld::sql::Sql for QxSql {
+impl qxsqld::SqlProvider for QxSql {
     async fn create_record(&self, table: &str, record: &HashMap<String, DbValue>) -> anyhow::Result<i64> {
         let db = self.0.read().await;
         match &*db {
