@@ -7,11 +7,11 @@ pub mod sql;
 pub mod sql_utils;
 
 // Re-export commonly used types
-pub use shvclient::AppState;
 pub use sql::{
     DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam,
     RecInsertParam, RecOp, RecReadParam, RecUpdateParam, SqlOperation
 };
-pub use sql_utils::{
-    replace_named_with_positional_params, postgres_query_positional_args_from_sqlite
-};
+
+pub fn string_list_to_ref_vec(fields: &Option<Vec<String>>) -> Option<Vec<&str>> {
+    fields.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect())
+}

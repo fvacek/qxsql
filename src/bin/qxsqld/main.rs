@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 use qxsqld::{
-    sql::SqlProvider, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam
+    sql::{RecListParam, SqlProvider}, string_list_to_ref_vec, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam
 };
 use appstate::{QxLockedAppState, QxSharedAppState};
 use sql_impl::{QxSql, DbPool, sql_exec_transaction};
@@ -194,6 +194,25 @@ async fn main() -> shvrpc::Result<()> {
                 });
                 None
             }
+            "list" [None, Read, "{s:table,{s}|n:fields,i|n:ids_above,i|n:limit}", "{s|i|b|t|n}"] (param: RecListParam) => {
+                let mut resp = request.prepare_response().unwrap_or_default();
+                tokio::task::spawn(async move {
+                    let qxsql = QxSql(app_state);
+                    let fields = string_list_to_ref_vec(&param.fields);
+                    let result = qxsql.list_records(&param.table, fields, param.ids_above, param.limit).await;
+                    match result {
+                        Ok(record) => {
+                            let record = to_rpcvalue(&record).expect("serde should work");
+                            resp.set_result(record);
+                        },
+                        Err(e) => {
+                            resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("List records error: {}", e)));
+                        }
+                    };
+                    client_cmd_tx.send_message(resp).unwrap_or_else(|err| log::error!("sql_select: Cannot send response ({err})"));
+                });
+                None
+            }
             "create" [None, Write, "{s:table,{s|i|b|t|n}:record,s:issuer}", "i"] (param: RecInsertParam) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
@@ -219,11 +238,12 @@ async fn main() -> shvrpc::Result<()> {
                 });
                 None
             }
-            "read" [None, Read, "{s:table,{i}:id}", "{s|i|b|t|n}"] (param: RecReadParam) => {
+            "read" [None, Read, "{s:table,i:id},{s}|n:fields", "{s|i|b|t|n}|n"] (param: RecReadParam) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
                     let qxsql = QxSql(app_state);
-                    let result = qxsql.read_record(&param.table, param.id).await;
+                    let fields = string_list_to_ref_vec(&param.fields);
+                    let result = qxsql.read_record(&param.table, param.id, fields).await;
                     match result {
                         Ok(record) => {
                             let record = to_rpcvalue(&record).expect("serde should work");

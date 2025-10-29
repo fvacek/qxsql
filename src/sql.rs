@@ -9,9 +9,9 @@ use shvproto::{RpcValue, from_rpcvalue};
 pub trait SqlProvider {
     async fn query(&self, query: &str, params: Option<&Record>) -> anyhow::Result<SelectResult>;
     async fn exec(&self, query: &str, params: Option<&Record>) -> anyhow::Result<ExecResult>;
-    async fn list_records(&self, table: &str, fields: Option<&[&str]>, ids_greater_than: Option<i64>, limit: Option<i64>) -> anyhow::Result<Vec<Record>>;
+    async fn list_records(&self, table: &str, fields: Option<Vec<&str>>, ids_greater_than: Option<i64>, limit: Option<i64>) -> anyhow::Result<Vec<Record>>;
     async fn create_record(&self, table: &str, record: &Record) -> anyhow::Result<i64>;
-    async fn read_record(&self, table: &str, id: i64) -> anyhow::Result<Option<Record>>;
+    async fn read_record(&self, table: &str, id: i64, fields: Option<Vec<&str>>) -> anyhow::Result<Option<Record>>;
     async fn update_record(&self, table: &str, id: i64, record: &Record) -> anyhow::Result<bool>;
     async fn delete_record(&self, table: &str, id: i64) -> anyhow::Result<bool>;
 }
@@ -158,9 +158,29 @@ impl TryFrom<&RpcValue> for RecInsertParam {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct RecListParam {
+    pub table: String,
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
+    #[serde(default)]
+    pub ids_above: Option<i64>, /// IDs greater than
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+impl TryFrom<&RpcValue> for RecListParam {
+    type Error = String;
+
+    fn try_from(value: &RpcValue) -> Result<Self, Self::Error> {
+        from_rpcvalue(value).map_err(|e| e.to_string())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RecReadParam {
     pub table: String,
     pub id: i64,
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
 }
 impl TryFrom<&RpcValue> for RecReadParam {
     type Error = String;

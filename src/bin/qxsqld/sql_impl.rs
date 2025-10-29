@@ -229,11 +229,11 @@ impl ListId {
 pub struct QxSql(pub QxSharedAppState);
 impl QxSql {
     async fn list_records_impl(
-        &self, table: &str, fields: Option<&[&str]>,
+        &self, table: &str, fields: Option<Vec<&str>>,
         id: ListId,
         limit: Option<i64>,
     ) -> anyhow::Result<Vec<Record>> {
-        let fields_str = fields.unwrap_or(&["*"]).join(", ");
+        let fields_str = fields.unwrap_or_else(|| vec!["*"]).join(", ");
         let mut qs = format!("SELECT {} FROM {}", fields_str, table);
         match id {
             ListId::IdIsEqual(id) => {
@@ -275,7 +275,7 @@ impl qxsqld::sql::SqlProvider for QxSql {
         }
     }
 
-    async fn list_records(&self, table: &str, fields: Option<&[&str]>, ids_greater_than: Option<i64>, limit: Option<i64>) -> anyhow::Result<Vec<Record>> {
+    async fn list_records(&self, table: &str, fields: Option<Vec<&str>>, ids_greater_than: Option<i64>, limit: Option<i64>) -> anyhow::Result<Vec<Record>> {
         self.list_records_impl(table, fields, ListId::new_greater_than(ids_greater_than), limit).await
     }
 
@@ -291,8 +291,8 @@ impl qxsqld::sql::SqlProvider for QxSql {
             }
         })
     }
-    async fn read_record(&self, table: &str, id: i64) -> anyhow::Result<Option<Record>> {
-        let records = self.list_records_impl(table, None, ListId::new_is_equal(Some(id)), None).await?;
+    async fn read_record(&self, table: &str, id: i64, fields: Option<Vec<&str>>) -> anyhow::Result<Option<Record>> {
+        let records = self.list_records_impl(table, fields, ListId::new_is_equal(Some(id)), None).await?;
         Ok(records.into_iter().next())
     }
 
