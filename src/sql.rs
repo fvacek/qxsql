@@ -91,7 +91,9 @@ pub type DateTime = chrono::DateTime<FixedOffset>;
 #[serde(untagged)]
 pub enum DbValue {
     String(String),
+    Blob(Vec<u8>),
     Int(i64),
+    Double(f64),
     Bool(bool),
     DateTime(DateTime),
     Null,
@@ -121,6 +123,24 @@ impl From<i32> for DbValue {
 impl From<i64> for DbValue {
     fn from(value: i64) -> Self {
         DbValue::Int(value)
+    }
+}
+
+impl From<f64> for DbValue {
+    fn from(value: f64) -> Self {
+        DbValue::Double(value)
+    }
+}
+
+impl From<&[u8]> for DbValue {
+    fn from(value: &[u8]) -> Self {
+        DbValue::Blob(value.to_vec())
+    }
+}
+
+impl From<Vec<u8>> for DbValue {
+    fn from(value: Vec<u8>) -> Self {
+        DbValue::Blob(value)
     }
 }
 
