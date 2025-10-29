@@ -13,7 +13,7 @@
 ///
 /// # Examples
 /// ```
-/// use qxsqld::sql_utils::replace_named_with_positional_params;
+/// use qxsql::sql_utils::replace_named_with_positional_params;
 /// let keys = vec!["name", "age"];
 /// let sql = "SELECT * FROM users WHERE name = :name AND age > :age";
 /// let result = replace_named_with_positional_params(sql, &keys, '?');

@@ -1,10 +1,10 @@
 [package]
-name = "qxsqld"
+name = "qxsql"
 version = "0.1.1"
 edition = "2024"
 
 [lib]
-name = "qxsqld"
+name = "qxsql"
 path = "src/lib.rs"
 
 [[bin]]
@@ -43,7 +43,7 @@ default = ["binary"]
 binary = [
     "sqlx",
     "shvrpc",
-    "shvclient", 
+    "shvclient",
     "futures",
     "futures-util",
     "tokio",

@@ -8,8 +8,8 @@ use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
 use anyhow::{anyhow};
 
 use crate::appstate::{QxSharedAppState};
-use qxsqld::sql::{DbField, DbValue, ExecResult, QueryAndParamsList, Record, SelectResult};
-use qxsqld::sql_utils::{self, postgres_query_positional_args_from_sqlite};
+use qxsql::sql::{DbField, DbValue, ExecResult, QueryAndParamsList, Record, SelectResult};
+use qxsql::sql_utils::{self, postgres_query_positional_args_from_sqlite};
 
 pub enum DbPool {
     Postgres(PgPool),
@@ -225,7 +225,7 @@ impl QxSql {
         if let Some(limit) = limit {
             qs.push_str(&format!(" LIMIT {}", limit));
         }
-        let result = qxsqld::sql::SqlProvider::query(self, &qs, None).await?;
+        let result = qxsql::sql::SqlProvider::query(self, &qs, None).await?;
         Ok((0..result.rows.len())
             .filter_map(|i| result.record(i))
             .collect())
@@ -233,7 +233,7 @@ impl QxSql {
 }
 
 #[async_trait]
-impl qxsqld::sql::SqlProvider for QxSql {
+impl qxsql::sql::SqlProvider for QxSql {
     async fn query(&self, query: &str, params: Option<&Record>) -> anyhow::Result<SelectResult> {
         let db = self.0.read().await;
         let empty_params = Record::default();
@@ -287,7 +287,7 @@ impl qxsqld::sql::SqlProvider for QxSql {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qxsqld::sql::{record_from_slice, SqlProvider};
+    use qxsql::sql::{record_from_slice, SqlProvider};
     use sqlx::sqlite::SqlitePoolOptions;
     use tokio::sync::RwLock;
     use chrono::{Datelike, FixedOffset, TimeZone};

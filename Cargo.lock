@@ -1465,7 +1465,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "qxsqld"
+name = "qxsql"
 version = "0.1.1"
 dependencies = [
  "anyhow",

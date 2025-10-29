@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use qxsqld::{
+use qxsql::{
     sql::{RecListParam, SqlProvider}, string_list_to_ref_vec, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam
 };
 use appstate::{QxLockedAppState, QxSharedAppState};
