@@ -62,7 +62,7 @@ async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &str, params: &Record) -
 }
 
 async fn sql_exec_postgres(db_pool: &Pool<Postgres>, query: &str, params: &Record) -> anyhow::Result<ExecResult> {
-    let result = sql_exec_impl!(db_pool, query, params, '?');
+    let result = sql_exec_impl!(db_pool, query, params, '$');
     Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: None })
 }
 
