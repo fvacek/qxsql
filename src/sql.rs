@@ -47,15 +47,11 @@ pub trait SqlProvider: Send + Sync + Sized {
     async fn update_record(&self, table: &str, id: i64, record: &Record) -> anyhow::Result<bool> {
         let key_vals = record.keys().map(|k| format!("{k} = :{k}")).collect::<Vec<_>>().join(", ");
         let query = format!("UPDATE {table} SET {key_vals} WHERE id = {id}");
-        self.exec(&query, Some(record)).await.and_then(|exec_result| {
-            Ok(exec_result.rows_affected == 1)
-        })
+        self.exec(&query, Some(record)).await.map(|exec_result| exec_result.rows_affected == 1)
     }
     async fn delete_record(&self, table: &str, id: i64) -> anyhow::Result<bool> {
         let query = format!("DELETE FROM {table} WHERE id = {id}");
-        self.exec(&query, None).await.and_then(|exec_result| {
-            Ok(exec_result.rows_affected == 1)
-        })
+        self.exec(&query, None).await.map(|exec_result| exec_result.rows_affected == 1)
     }
 }
 

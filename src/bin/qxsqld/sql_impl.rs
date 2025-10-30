@@ -195,8 +195,8 @@ impl qxsql::sql::SqlProvider for QxSql {
         let empty_params = Record::default();
         let params = params.unwrap_or(&empty_params);
         match &*db {
-            DbPool::Sqlite(pool) => sql_select_sqlite(&pool, query, params).await,
-            DbPool::Postgres(pool) => sql_select_postgres(&pool, query, params).await,
+            DbPool::Sqlite(pool) => sql_select_sqlite(pool, query, params).await,
+            DbPool::Postgres(pool) => sql_select_postgres(pool, query, params).await,
         }
     }
     async fn exec(&self, query: &str, params: Option<&Record>) -> anyhow::Result<ExecResult> {
@@ -204,8 +204,8 @@ impl qxsql::sql::SqlProvider for QxSql {
         let empty_params = Record::default();
         let params = params.unwrap_or(&empty_params);
         match &*db {
-            DbPool::Sqlite(pool) => sql_exec_sqlite(&pool, query, params).await,
-            DbPool::Postgres(pool) => sql_exec_postgres(&pool, query, params).await,
+            DbPool::Sqlite(pool) => sql_exec_sqlite(pool, query, params).await,
+            DbPool::Postgres(pool) => sql_exec_postgres(pool, query, params).await,
         }
     }
 }
