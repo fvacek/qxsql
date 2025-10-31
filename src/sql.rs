@@ -27,7 +27,7 @@ impl ListId {
 
 #[async_trait]
 pub trait SqlProvider: Send + Sync + Sized {
-    async fn query(&self, query: &str, params: Option<&Record>) -> anyhow::Result<SelectResult>;
+    async fn query(&self, query: &str, params: Option<&Record>) -> anyhow::Result<QueryResult>;
     async fn exec(&self, query: &str, params: Option<&Record>) -> anyhow::Result<ExecResult>;
 
     async fn list_records(&self, table: &str, fields: Option<Vec<&str>>, ids_greater_than: Option<i64>, limit: Option<i64>) -> anyhow::Result<Vec<Record>> {
@@ -321,11 +321,11 @@ pub struct ExecResult {
     pub insert_id: Option<i64>,
 }
 #[derive(Debug, Serialize, Deserialize, Default, PartialEq)]
-pub struct SelectResult {
+pub struct QueryResult {
     pub fields: Vec<DbField>,
     pub rows: Vec<Vec<DbValue>>,
 }
-impl SelectResult {
+impl QueryResult {
     pub fn record(&self, row: usize) -> Option<Record> {
         self.rows.get(row).map(|row| {
             row.iter()

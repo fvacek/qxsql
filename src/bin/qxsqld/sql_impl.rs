@@ -8,7 +8,7 @@ use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
 use anyhow::{anyhow};
 
 use crate::appstate::{QxSharedAppState};
-use qxsql::sql::{DbField, DbValue, ExecResult, QueryAndParamsList, Record, SelectResult};
+use qxsql::sql::{DbField, DbValue, ExecResult, QueryAndParamsList, Record, QueryResult};
 use qxsql::sql_utils::{self, postgres_query_positional_args_from_sqlite};
 
 pub enum DbPool {
@@ -90,11 +90,11 @@ async fn sql_exec_transaction_postgres(db_pool: &Pool<Postgres>, query_list: &Qu
     Ok(())
 }
 
-fn process_rows<R>(rows: &[R], value_extractor: impl Fn(&R, usize) -> anyhow::Result<DbValue>) -> anyhow::Result<SelectResult>
+fn process_rows<R>(rows: &[R], value_extractor: impl Fn(&R, usize) -> anyhow::Result<DbValue>) -> anyhow::Result<QueryResult>
 where
     R: Row,
 {
-    let mut result: SelectResult = Default::default();
+    let mut result: QueryResult = Default::default();
     for (ix, rowx) in rows.iter().enumerate() {
         let cols = rowx.columns();
         let mut row: Vec<DbValue> = Vec::with_capacity(cols.len());
@@ -111,7 +111,7 @@ where
     Ok(result)
 }
 
-async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &str, params: &Record) -> anyhow::Result<SelectResult> {
+async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &str, params: &Record) -> anyhow::Result<QueryResult> {
     let sql = prepare_sql_with_query_params(query, params, '?');
     let q = sqlx::query(&sql);
     let q = bind_db_values!(q, params.values());
@@ -119,7 +119,7 @@ async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &str, params: &Record)
     process_rows(&rows, db_value_from_sqlite_row)
 }
 
-async fn sql_select_postgres(db_pool: &Pool<Postgres>, query: &str, params: &Record) -> anyhow::Result<SelectResult> {
+async fn sql_select_postgres(db_pool: &Pool<Postgres>, query: &str, params: &Record) -> anyhow::Result<QueryResult> {
     let sql = prepare_sql_with_query_params(query, params, '$');
     let q = sqlx::query(&sql);
     let q = bind_db_values!(q, params.values());
@@ -190,7 +190,7 @@ pub struct QxSql(pub QxSharedAppState);
 
 #[async_trait]
 impl qxsql::sql::SqlProvider for QxSql {
-    async fn query(&self, query: &str, params: Option<&Record>) -> anyhow::Result<SelectResult> {
+    async fn query(&self, query: &str, params: Option<&Record>) -> anyhow::Result<QueryResult> {
         let db = self.0.read().await;
         let empty_params = Record::default();
         let params = params.unwrap_or(&empty_params);
