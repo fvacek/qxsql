@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 use qxsql::{
-    sql::{RecListParam, SqlProvider}, string_list_to_ref_vec, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam
+    sql::{QxSqlApi, RecListParam, CREATE_PARAMS, CREATE_RESULT, DELETE_PARAMS, DELETE_RESULT, EXEC_PARAMS, EXEC_RESULT, LIST_PARAMS, LIST_RESULT, QUERY_PARAMS, QUERY_RESULT, READ_PARAMS, READ_RESULT, TRANSACTION_PARAMS, TRANSACTION_RESULT, UPDATE_PARAMS, UPDATE_RESULT}, string_list_to_ref_vec, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam
 };
 use appstate::{QxLockedAppState, QxSharedAppState};
 use sql_impl::{QxSql, DbPool, sql_exec_transaction};
@@ -145,7 +145,7 @@ async fn main() -> shvrpc::Result<()> {
 
     let sql_node = shvclient::fixed_node!(
         sql_handler<QxLockedAppState>(request, client_cmd_tx, app_state) {
-            "query" [None, Read, "[s:query,{s|i|b|t|n}:params]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParams) => {
+            "query" [None, Read, QUERY_PARAMS, QUERY_RESULT] (query: QueryAndParams) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
                     let qxsql = QxSql(app_state);
@@ -160,7 +160,7 @@ async fn main() -> shvrpc::Result<()> {
                 });
                 None
             }
-            "exec" [None, Read, "[s:query,{s|i|b|t|n}:params,s|n:issuer]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParams) => {
+            "exec" [None, Read, EXEC_PARAMS, EXEC_RESULT] (query: QueryAndParams) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 if let Err(auth_error) = check_write_authorization(&request) {
                     return Some(Err(auth_error));
@@ -178,7 +178,7 @@ async fn main() -> shvrpc::Result<()> {
                 });
                 None
             }
-            "transaction" [None, Read, "[s:query,[[s|i|b|t|n]]:params]", "{{s:name}:fields,[[s|i|b|t|n]]:rows}"] (query: QueryAndParamsList) => {
+            "transaction" [None, Read, TRANSACTION_PARAMS, TRANSACTION_RESULT] (query: QueryAndParamsList) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 if let Err(auth_error) = check_write_authorization(&request) {
                     return Some(Err(auth_error));
@@ -196,7 +196,7 @@ async fn main() -> shvrpc::Result<()> {
                 });
                 None
             }
-            "list" [None, Read, "{s:table,{s}|n:fields,i|n:ids_above,i|n:limit}", "{s|i|b|t|n}"] (param: RecListParam) => {
+            "list" [None, Read, LIST_PARAMS, LIST_RESULT] (param: RecListParam) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
                     let qxsql = QxSql(app_state);
@@ -215,7 +215,7 @@ async fn main() -> shvrpc::Result<()> {
                 });
                 None
             }
-            "create" [None, Write, "{s:table,{s|i|b|t|n}:record,s:issuer}", "i"] (param: RecInsertParam) => {
+            "create" [None, Write, CREATE_PARAMS, CREATE_RESULT] (param: RecInsertParam) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
                     let qxsql = QxSql(app_state);
@@ -240,7 +240,7 @@ async fn main() -> shvrpc::Result<()> {
                 });
                 None
             }
-            "read" [None, Read, "{s:table,i:id},{s}|n:fields", "{s|i|b|t|n}|n"] (param: RecReadParam) => {
+            "read" [None, Read, READ_PARAMS, READ_RESULT] (param: RecReadParam) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
                     let qxsql = QxSql(app_state);
@@ -259,7 +259,7 @@ async fn main() -> shvrpc::Result<()> {
                 });
                 None
             }
-            "update" [None, Write, "{s:table,i:id,{s|i|b|t|n}:record,s:issuer}", "b"] (param: RecUpdateParam) => {
+            "update" [None, Write, UPDATE_PARAMS, UPDATE_RESULT] (param: RecUpdateParam) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
                     let qxsql = QxSql(app_state);
@@ -284,7 +284,7 @@ async fn main() -> shvrpc::Result<()> {
                 });
                 None
             }
-            "delete" [None, Write, "{s:table,i:id,s:issuer}", "b"] (param: RecDeleteParam) => {
+            "delete" [None, Write, DELETE_PARAMS, DELETE_RESULT] (param: RecDeleteParam) => {
                 let mut resp = request.prepare_response().unwrap_or_default();
                 tokio::task::spawn(async move {
                     let qxsql = QxSql(app_state);

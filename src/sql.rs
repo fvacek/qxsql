@@ -1,14 +1,14 @@
-use std::collections::HashMap;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use chrono::FixedOffset;
 use serde::{Deserialize, Serialize};
 use shvproto::{RpcValue, from_rpcvalue};
+use std::collections::HashMap;
 
 pub enum ListId {
     IdIsEqual(i64),
     IdsGreaterThan(i64),
-    None
+    None,
 }
 impl ListId {
     pub fn new_is_equal(id: Option<i64>) -> Self {
@@ -25,39 +25,100 @@ impl ListId {
     }
 }
 
+pub const QUERY_PARAMS: &str = "[s:query,{s|i|b|t|n}:params]";
+pub const QUERY_RESULT: &str = "{{s:name}:fields,[[s|i|b|t|n]]:rows}";
+pub const EXEC_PARAMS: &str = "[s:query,{s|i|b|t|n}:params]";
+pub const EXEC_RESULT: &str = "{i:rows_affected,i|n:insert_id}";
+pub const TRANSACTION_PARAMS: &str = "[s:query,[[s|i|b|t|n]]:params]";
+pub const TRANSACTION_RESULT: &str = "n";
+pub const LIST_PARAMS: &str = "{s:table,[s]|n:fields,i|n:ids_above,i|n:limit}";
+pub const LIST_RESULT: &str = "[{s|i|b|t|n}]";
+pub const CREATE_PARAMS: &str = "{s:table,{s|i|b|t|n}:record}";
+pub const CREATE_RESULT: &str = "i";
+pub const READ_PARAMS: &str = "{s:table,i:id,{s}|n:fields}";
+pub const READ_RESULT: &str = "{s|i|b|t|n}|n";
+pub const UPDATE_PARAMS: &str = "{s:table,i:id,{s|i|b|t|n}:record}";
+pub const UPDATE_RESULT: &str = "b";
+pub const DELETE_PARAMS: &str = "{s:table,i:id}";
+pub const DELETE_RESULT: &str = "b";
+
 #[async_trait]
-pub trait SqlProvider: Send + Sync + Sized {
+pub trait QxSqlApi: Send + Sync + Sized {
     async fn query(&self, query: &str, params: Option<&Record>) -> anyhow::Result<QueryResult>;
     async fn exec(&self, query: &str, params: Option<&Record>) -> anyhow::Result<ExecResult>;
 
-    async fn list_records(&self, table: &str, fields: Option<Vec<&str>>, ids_greater_than: Option<i64>, limit: Option<i64>) -> anyhow::Result<Vec<Record>> {
-        list_one_or_more_records(self, table, fields, ListId::new_greater_than(ids_greater_than), limit).await
+    async fn list_records(
+        &self,
+        table: &str,
+        fields: Option<Vec<&str>>,
+        ids_greater_than: Option<i64>,
+        limit: Option<i64>,
+    ) -> anyhow::Result<Vec<Record>> {
+        list_one_or_more_records(
+            self,
+            table,
+            fields,
+            ListId::new_greater_than(ids_greater_than),
+            limit,
+        )
+        .await
     }
     async fn create_record(&self, table: &str, record: &Record) -> anyhow::Result<i64> {
-        let keys = record.keys().map(|k| k.to_string()).collect::<Vec<_>>().join(", ");
-        let vals = record.keys().map(|k| format!(":{k}")).collect::<Vec<_>>().join(", ");
+        let keys = record
+            .keys()
+            .map(|k| k.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let vals = record
+            .keys()
+            .map(|k| format!(":{k}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let query = format!("INSERT INTO {table} ({keys}) VALUES ({vals}) RETURNING id");
-        let result = self.exec(&query, Some(record)).await?;
-        result.insert_id.ok_or_else(|| anyhow!("Insert should return an ID"))
+        let result = self.query(&query, Some(record)).await?;
+        if result.rows.is_empty() || result.rows[0].is_empty() {
+            Err(anyhow!("Insert should return an ID"))
+        } else {
+            let DbValue::Int(id) = &result.rows[0][0] else {
+                return Err(anyhow!("Insert should return an integer ID"));
+            };
+            Ok(*id)
+        }
     }
-    async fn read_record(&self, table: &str, id: i64, fields: Option<Vec<&str>>) -> anyhow::Result<Option<Record>> {
-        let records = list_one_or_more_records(self, table, fields, ListId::new_is_equal(Some(id)), None).await?;
+    async fn read_record(
+        &self,
+        table: &str,
+        id: i64,
+        fields: Option<Vec<&str>>,
+    ) -> anyhow::Result<Option<Record>> {
+        let records =
+            list_one_or_more_records(self, table, fields, ListId::new_is_equal(Some(id)), None)
+                .await?;
         Ok(records.into_iter().next())
     }
     async fn update_record(&self, table: &str, id: i64, record: &Record) -> anyhow::Result<bool> {
-        let key_vals = record.keys().map(|k| format!("{k} = :{k}")).collect::<Vec<_>>().join(", ");
+        let key_vals = record
+            .keys()
+            .map(|k| format!("{k} = :{k}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let query = format!("UPDATE {table} SET {key_vals} WHERE id = {id}");
-        self.exec(&query, Some(record)).await.map(|exec_result| exec_result.rows_affected == 1)
+        self.exec(&query, Some(record))
+            .await
+            .map(|exec_result| exec_result.rows_affected == 1)
     }
     async fn delete_record(&self, table: &str, id: i64) -> anyhow::Result<bool> {
         let query = format!("DELETE FROM {table} WHERE id = {id}");
-        self.exec(&query, None).await.map(|exec_result| exec_result.rows_affected == 1)
+        self.exec(&query, None)
+            .await
+            .map(|exec_result| exec_result.rows_affected == 1)
     }
 }
 
-async fn list_one_or_more_records<T: SqlProvider>(
+async fn list_one_or_more_records<T: QxSqlApi>(
     sql: &T,
-    table: &str, fields: Option<Vec<&str>>,
+    table: &str,
+    fields: Option<Vec<&str>>,
     id: ListId,
     limit: Option<i64>,
 ) -> anyhow::Result<Vec<Record>> {
@@ -66,10 +127,10 @@ async fn list_one_or_more_records<T: SqlProvider>(
     match id {
         ListId::IdIsEqual(id) => {
             qs.push_str(&format!(" WHERE id = {}", id));
-        },
+        }
         ListId::IdsGreaterThan(id) => {
             qs.push_str(&format!(" WHERE id > {}", id));
-        },
+        }
         ListId::None => {}
     }
     if let Some(limit) = limit {
@@ -192,11 +253,9 @@ pub enum SqlOperation {
 /// - `["SELECT * FROM table", {}]` - query with empty parameters object
 #[derive(Debug, Serialize, Deserialize)]
 pub struct QueryAndParams(
-    pub String,                                     // query
-    #[serde(default)]
-    pub Option<Record>, // params
-    #[serde(default)]
-    pub Option<String>,           // issuer
+    pub String,                           // query
+    #[serde(default)] pub Option<Record>, // params
+    #[serde(default)] pub Option<String>, // issuer
 );
 
 impl QueryAndParams {
@@ -222,7 +281,7 @@ impl TryFrom<&RpcValue> for QueryAndParams {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct QueryAndParamsList(pub String, #[serde(default)] pub Vec<Vec<DbValue>>);
+pub struct QueryAndParamsList(pub String, #[serde(default)] pub Vec<Record>);
 impl TryFrom<&RpcValue> for QueryAndParamsList {
     type Error = String;
 
@@ -268,7 +327,8 @@ pub struct RecListParam {
     #[serde(default)]
     pub fields: Option<Vec<String>>,
     #[serde(default)]
-    pub ids_above: Option<i64>, /// IDs greater than
+    pub ids_above: Option<i64>,
+    /// IDs greater than
     #[serde(default)]
     pub limit: Option<i64>,
 }

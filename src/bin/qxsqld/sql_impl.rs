@@ -9,7 +9,7 @@ use anyhow::{anyhow};
 
 use crate::appstate::{QxSharedAppState};
 use qxsql::sql::{DbField, DbValue, ExecResult, QueryAndParamsList, Record, QueryResult};
-use qxsql::sql_utils::{self, postgres_query_positional_args_from_sqlite};
+use qxsql::sql_utils::{self};
 
 pub enum DbPool {
     Postgres(PgPool),
@@ -23,7 +23,7 @@ pub async fn sql_exec_transaction(db: &DbPool, query: &QueryAndParamsList) -> an
     }
 }
 
-fn prepare_sql_with_query_params(query: &str, params: &Record, repl_char: char) -> String {
+fn fix_sql_query_params_placeholders(query: &str, params: &Record, repl_char: char) -> String {
     let keys = params.keys().map(|s| s.as_str()).collect::<Vec<_>>();
     sql_utils::replace_named_with_positional_params(query, &keys, repl_char)
 }
@@ -49,7 +49,7 @@ macro_rules! bind_db_values {
 
 macro_rules! sql_exec_impl {
     ($db_pool:expr, $query:expr, $params:expr, $repl_char:expr) => {{
-        let sql = prepare_sql_with_query_params($query, $params, $repl_char);
+        let sql = fix_sql_query_params_placeholders($query, $params, $repl_char);
         let q = sqlx::query(&sql);
         let q = bind_db_values!(q, $params.values());
         q.execute($db_pool).await?
@@ -67,11 +67,16 @@ async fn sql_exec_postgres(db_pool: &Pool<Postgres>, query: &str, params: &Recor
 }
 
 async fn sql_exec_transaction_sqlite(db_pool: &Pool<Sqlite>, query_list: &QueryAndParamsList) -> anyhow::Result<()> {
-    let mut tx = db_pool.begin().await?;
     let sql = &query_list.0;
-    for param in &query_list.1 {
-        let q = sqlx::query(sql);
-        let q = bind_db_values!(q, param);
+    let params = &query_list.1;
+    if params.is_empty() {
+        return Ok(());
+    }
+    let mut tx = db_pool.begin().await?;
+    let sql = fix_sql_query_params_placeholders(sql, &params[0], '$');
+    for param in params {
+        let q = sqlx::query(&sql);
+        let q = bind_db_values!(q, param.values());
         let _result = q.execute(&mut *tx).await?;
     }
     tx.commit().await?;
@@ -79,11 +84,16 @@ async fn sql_exec_transaction_sqlite(db_pool: &Pool<Sqlite>, query_list: &QueryA
 }
 
 async fn sql_exec_transaction_postgres(db_pool: &Pool<Postgres>, query_list: &QueryAndParamsList) -> anyhow::Result<()> {
+    let sql = &query_list.0;
+    let params = &query_list.1;
+    if params.is_empty() {
+        return Ok(());
+    }
     let mut tx = db_pool.begin().await?;
-    let sql = postgres_query_positional_args_from_sqlite(&query_list.0);
-    for param in &query_list.1 {
+    let sql = fix_sql_query_params_placeholders(sql, &params[0], '$');
+    for param in params {
         let q = sqlx::query(&sql);
-        let q = bind_db_values!(q, param);
+        let q = bind_db_values!(q, param.values());
         let _result = q.execute(&mut *tx).await?;
     }
     tx.commit().await?;
@@ -112,7 +122,7 @@ where
 }
 
 async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &str, params: &Record) -> anyhow::Result<QueryResult> {
-    let sql = prepare_sql_with_query_params(query, params, '?');
+    let sql = fix_sql_query_params_placeholders(query, params, '?');
     let q = sqlx::query(&sql);
     let q = bind_db_values!(q, params.values());
     let rows = q.fetch_all(db_pool).await?;
@@ -120,7 +130,7 @@ async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &str, params: &Record)
 }
 
 async fn sql_select_postgres(db_pool: &Pool<Postgres>, query: &str, params: &Record) -> anyhow::Result<QueryResult> {
-    let sql = prepare_sql_with_query_params(query, params, '$');
+    let sql = fix_sql_query_params_placeholders(query, params, '$');
     let q = sqlx::query(&sql);
     let q = bind_db_values!(q, params.values());
     let rows = q.fetch_all(db_pool).await?;
@@ -189,7 +199,7 @@ fn db_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<DbVal
 pub struct QxSql(pub QxSharedAppState);
 
 #[async_trait]
-impl qxsql::sql::SqlProvider for QxSql {
+impl qxsql::sql::QxSqlApi for QxSql {
     async fn query(&self, query: &str, params: Option<&Record>) -> anyhow::Result<QueryResult> {
         let db = self.0.read().await;
         let empty_params = Record::default();
@@ -213,7 +223,7 @@ impl qxsql::sql::SqlProvider for QxSql {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qxsql::sql::{record_from_slice, SqlProvider};
+    use qxsql::sql::{record_from_slice, QxSqlApi};
     use sqlx::sqlite::SqlitePoolOptions;
     use tokio::sync::RwLock;
     use chrono::{Datelike, FixedOffset, TimeZone};
