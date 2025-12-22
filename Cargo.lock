@@ -1471,7 +1471,7 @@ dependencies = [
  "serde_yaml",
  "shvclient",
  "shvproto",
- "shvrpc 7.1.6 (git+https://github.com/silicon-heaven/libshvrpc-rs?branch=master)",
+ "shvrpc",
  "simple_logger",
  "sqlx",
  "tokio",
@@ -1874,7 +1874,7 @@ dependencies = [
  "rustls-pemfile",
  "rustls-platform-verifier",
  "shvproto",
- "shvrpc 7.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
+ "shvrpc",
  "tokio",
  "tokio-util",
  "url",
@@ -1899,27 +1899,6 @@ name = "shvrpc"
 version = "7.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e044c1198308d33f5470afee029a5d078b9746823d9723e31d332799f247c9b"
-dependencies = [
- "anyhow",
- "async-trait",
- "crc",
- "duration-str 0.18.0",
- "futures",
- "futures-time",
- "glob",
- "hex",
- "log",
- "serde",
- "serde_yaml",
- "sha1",
- "shvproto",
- "url",
-]
-
-[[package]]
-name = "shvrpc"
-version = "7.1.6"
-source = "git+https://github.com/silicon-heaven/libshvrpc-rs?branch=master#d9026dcdff6d18e45a2a106460d7c52a025be71a"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -1,4 +1,4 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use qxsql::{
     sql::{QxSqlApi, RecListParam, CREATE_PARAMS, CREATE_RESULT, DELETE_PARAMS, DELETE_RESULT, EXEC_PARAMS, EXEC_RESULT, LIST_PARAMS, LIST_RESULT, QUERY_PARAMS, QUERY_RESULT, READ_PARAMS, READ_RESULT, TRANSACTION_PARAMS, TRANSACTION_RESULT, UPDATE_PARAMS, UPDATE_RESULT}, string_list_to_ref_vec, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam
@@ -15,12 +15,12 @@ use tokio::sync::RwLock;
 
 use clap::Parser;
 use log::*;
-use shvproto::{RpcValue, to_rpcvalue};
+use shvproto::to_rpcvalue;
 use shvrpc::util::parse_log_verbosity;
 use simple_logger::SimpleLogger;
 use url::Url;
 
-use crate::appstate::State;
+use crate::appstate::AppState;
 
 
 mod appstate;
@@ -78,8 +78,6 @@ fn init_logger(cli_opts: &Opts) {
     logger.init().unwrap();
 }
 
-type AppState = Arc<RwLock<State>>;
-
 struct SqlNode {
     app_state: AppState,
 }
@@ -88,6 +86,7 @@ shvclient::impl_static_node! {
     SqlNode(&self, request, client_cmd_tx) {
         "query" [None, Read, QUERY_PARAMS, QUERY_RESULT] (query: QueryAndParams) => {
             let mut resp = request.prepare_response().unwrap_or_default();
+            let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
                 let qxsql = QxSql(app_state);
                 let result = qxsql.query(query.query(), query.params()).await;
@@ -106,6 +105,7 @@ shvclient::impl_static_node! {
             if let Err(auth_error) = check_write_authorization(&request) {
                 return Some(Err(auth_error));
             }
+            let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
                 let qxsql = QxSql(app_state);
                 let result = qxsql.exec(query.query(), query.params()).await;
@@ -124,6 +124,7 @@ shvclient::impl_static_node! {
             if let Err(auth_error) = check_write_authorization(&request) {
                 return Some(Err(auth_error));
             }
+            let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
                 let state = app_state.read().await;
                 let result = sql_exec_transaction(&state, &query).await;
@@ -139,6 +140,7 @@ shvclient::impl_static_node! {
         }
         "list" [None, Read, LIST_PARAMS, LIST_RESULT] (param: RecListParam) => {
             let mut resp = request.prepare_response().unwrap_or_default();
+            let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
                 let qxsql = QxSql(app_state);
                 let fields = string_list_to_ref_vec(&param.fields);
@@ -158,6 +160,7 @@ shvclient::impl_static_node! {
         }
         "create" [None, Write, CREATE_PARAMS, CREATE_RESULT] (param: RecInsertParam) => {
             let mut resp = request.prepare_response().unwrap_or_default();
+            let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
                 let qxsql = QxSql(app_state);
                 let result = qxsql.create_record(&param.table, &param.record).await;
@@ -183,6 +186,7 @@ shvclient::impl_static_node! {
         }
         "read" [None, Read, READ_PARAMS, READ_RESULT] (param: RecReadParam) => {
             let mut resp = request.prepare_response().unwrap_or_default();
+            let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
                 let qxsql = QxSql(app_state);
                 let fields = string_list_to_ref_vec(&param.fields);
@@ -202,6 +206,7 @@ shvclient::impl_static_node! {
         }
         "update" [None, Write, UPDATE_PARAMS, UPDATE_RESULT] (param: RecUpdateParam) => {
             let mut resp = request.prepare_response().unwrap_or_default();
+            let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
                 let qxsql = QxSql(app_state);
                 let result = qxsql.update_record(&param.table, param.id, &param.record).await;
@@ -227,6 +232,7 @@ shvclient::impl_static_node! {
         }
         "delete" [None, Write, DELETE_PARAMS, DELETE_RESULT] (param: RecDeleteParam) => {
             let mut resp = request.prepare_response().unwrap_or_default();
+            let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
                 let qxsql = QxSql(app_state);
                 let result = qxsql.delete_record(&param.table, param.id).await;
@@ -301,7 +307,6 @@ async fn main() -> shvrpc::Result<()> {
     };
 
     let app_state = AppState::new(RwLock::new(db));
-    let app_state2 = app_state.clone();
 
     // let app_tasks = move |_client_cmd_tx, _client_evt_rx| {
     //     tokio::task::spawn(emit_chng_task(client_cmd_tx, client_evt_rx, app_state));

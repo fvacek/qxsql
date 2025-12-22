@@ -7,9 +7,10 @@ use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
 use anyhow::{anyhow};
 
-use crate::appstate::{QxSharedAppState};
 use qxsql::sql::{DbField, DbValue, ExecResult, QueryAndParamsList, Record, QueryResult};
 use qxsql::sql_utils::{self};
+
+use crate::appstate::AppState;
 
 pub enum DbPool {
     Postgres(PgPool),
@@ -196,7 +197,7 @@ fn db_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<DbVal
     }
 }
 
-pub struct QxSql(pub QxSharedAppState);
+pub struct QxSql(pub AppState);
 
 #[async_trait]
 impl qxsql::sql::QxSqlApi for QxSql {
@@ -250,7 +251,7 @@ mod tests {
             .execute(&pool)
             .await?;
 
-        let app_state = crate::appstate::QxSharedAppState::new(RwLock::new(DbPool::Sqlite(pool)));
+        let app_state = AppState::new(RwLock::new(DbPool::Sqlite(pool)));
         Ok(QxSql(app_state))
     }
 
