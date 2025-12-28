@@ -10,14 +10,15 @@ use anyhow::{anyhow};
 use qxsql::sql::{DbField, DbValue, ExecResult, QueryAndParamsList, Record, QueryResult};
 use qxsql::sql_utils::{self};
 
-use crate::appstate::AppState;
+use crate::appstate::SharedAppState;
 
+#[derive(Debug, Clone)]
 pub enum DbPool {
     Postgres(PgPool),
     Sqlite(SqlitePool),
 }
 
-pub async fn sql_exec_transaction(db: &DbPool, query: &QueryAndParamsList) -> anyhow::Result<()> {
+pub async fn sql_exec_transaction(db: DbPool, query: &QueryAndParamsList) -> anyhow::Result<()> {
     match db {
         DbPool::Sqlite(pool) => sql_exec_transaction_sqlite(pool, query).await,
         DbPool::Postgres(pool) => sql_exec_transaction_postgres(pool, query).await,
@@ -53,21 +54,21 @@ macro_rules! sql_exec_impl {
         let sql = fix_sql_query_params_placeholders($query, $params, $repl_char);
         let q = sqlx::query(&sql);
         let q = bind_db_values!(q, $params.values());
-        q.execute($db_pool).await?
+        q.execute(&$db_pool).await?
     }};
 }
 
-async fn sql_exec_sqlite(db_pool: &Pool<Sqlite>, query: &str, params: &Record) -> anyhow::Result<ExecResult> {
+async fn sql_exec_sqlite(db_pool: Pool<Sqlite>, query: &str, params: &Record) -> anyhow::Result<ExecResult> {
     let result = sql_exec_impl!(db_pool, query, params, '?');
     Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: Some(result.last_insert_rowid()) })
 }
 
-async fn sql_exec_postgres(db_pool: &Pool<Postgres>, query: &str, params: &Record) -> anyhow::Result<ExecResult> {
+async fn sql_exec_postgres(db_pool: Pool<Postgres>, query: &str, params: &Record) -> anyhow::Result<ExecResult> {
     let result = sql_exec_impl!(db_pool, query, params, '$');
     Ok(ExecResult { rows_affected: result.rows_affected() as i64, insert_id: None })
 }
 
-async fn sql_exec_transaction_sqlite(db_pool: &Pool<Sqlite>, query_list: &QueryAndParamsList) -> anyhow::Result<()> {
+async fn sql_exec_transaction_sqlite(db_pool: Pool<Sqlite>, query_list: &QueryAndParamsList) -> anyhow::Result<()> {
     let sql = &query_list.0;
     let params = &query_list.1;
     if params.is_empty() {
@@ -84,7 +85,7 @@ async fn sql_exec_transaction_sqlite(db_pool: &Pool<Sqlite>, query_list: &QueryA
     Ok(())
 }
 
-async fn sql_exec_transaction_postgres(db_pool: &Pool<Postgres>, query_list: &QueryAndParamsList) -> anyhow::Result<()> {
+async fn sql_exec_transaction_postgres(db_pool: Pool<Postgres>, query_list: &QueryAndParamsList) -> anyhow::Result<()> {
     let sql = &query_list.0;
     let params = &query_list.1;
     if params.is_empty() {
@@ -122,19 +123,19 @@ where
     Ok(result)
 }
 
-async fn sql_select_sqlite(db_pool: &Pool<Sqlite>, query: &str, params: &Record) -> anyhow::Result<QueryResult> {
+async fn sql_select_sqlite(db_pool: Pool<Sqlite>, query: &str, params: &Record) -> anyhow::Result<QueryResult> {
     let sql = fix_sql_query_params_placeholders(query, params, '?');
     let q = sqlx::query(&sql);
     let q = bind_db_values!(q, params.values());
-    let rows = q.fetch_all(db_pool).await?;
+    let rows = q.fetch_all(&db_pool).await?;
     process_rows(&rows, db_value_from_sqlite_row)
 }
 
-async fn sql_select_postgres(db_pool: &Pool<Postgres>, query: &str, params: &Record) -> anyhow::Result<QueryResult> {
+async fn sql_select_postgres(db_pool: Pool<Postgres>, query: &str, params: &Record) -> anyhow::Result<QueryResult> {
     let sql = fix_sql_query_params_placeholders(query, params, '$');
     let q = sqlx::query(&sql);
     let q = bind_db_values!(q, params.values());
-    let rows = q.fetch_all(db_pool).await?;
+    let rows = q.fetch_all(&db_pool).await?;
     process_rows(&rows, db_value_from_postgres_row)
 }
 
@@ -197,24 +198,24 @@ fn db_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<DbVal
     }
 }
 
-pub struct QxSql(pub AppState);
+pub struct QxSql(pub SharedAppState);
 
 #[async_trait]
 impl qxsql::sql::QxSqlApi for QxSql {
     async fn query(&self, query: &str, params: Option<&Record>) -> anyhow::Result<QueryResult> {
-        let db = self.0.read().await;
+        let db = self.0.read().await.db.clone();
         let empty_params = Record::default();
         let params = params.unwrap_or(&empty_params);
-        match &*db {
+        match db {
             DbPool::Sqlite(pool) => sql_select_sqlite(pool, query, params).await,
             DbPool::Postgres(pool) => sql_select_postgres(pool, query, params).await,
         }
     }
     async fn exec(&self, query: &str, params: Option<&Record>) -> anyhow::Result<ExecResult> {
-        let db = self.0.read().await;
+        let db = self.0.read().await.db.clone();
         let empty_params = Record::default();
         let params = params.unwrap_or(&empty_params);
-        match &*db {
+        match db {
             DbPool::Sqlite(pool) => sql_exec_sqlite(pool, query, params).await,
             DbPool::Postgres(pool) => sql_exec_postgres(pool, query, params).await,
         }
@@ -251,7 +252,7 @@ mod tests {
             .execute(&pool)
             .await?;
 
-        let app_state = AppState::new(RwLock::new(DbPool::Sqlite(pool)));
+        let app_state = SharedAppState::new(RwLock::new(crate::appstate::AppState{db: DbPool::Sqlite(pool), db_access: None}));
         Ok(QxSql(app_state))
     }
 

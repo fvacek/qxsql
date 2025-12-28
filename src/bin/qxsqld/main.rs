@@ -1,4 +1,3 @@
-use std::sync::OnceLock;
 
 use qxsql::{
     sql::{QxSqlApi, RecListParam, CREATE_PARAMS, CREATE_RESULT, DELETE_PARAMS, DELETE_RESULT, EXEC_PARAMS, EXEC_RESULT, LIST_PARAMS, LIST_RESULT, QUERY_PARAMS, QUERY_RESULT, READ_PARAMS, READ_RESULT, TRANSACTION_PARAMS, TRANSACTION_RESULT, UPDATE_PARAMS, UPDATE_RESULT}, string_list_to_ref_vec, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam
@@ -7,7 +6,7 @@ use sql_impl::{QxSql, DbPool, sql_exec_transaction};
 use shvclient::appnodes::{DotAppNode, DotDeviceNode};
 
 use shvrpc::{
-    rpcmessage::{RpcError, RpcErrorCode},
+    metamethod::AccessLevel, rpcmessage::{RpcError, RpcErrorCode}
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -20,12 +19,13 @@ use shvrpc::util::parse_log_verbosity;
 use simple_logger::SimpleLogger;
 use url::Url;
 
-use crate::appstate::AppState;
+use crate::{appstate::{AppState, SharedAppState}, config::AccessOp, confignode::ConfigNode};
 
 
 mod appstate;
 mod config;
 mod sql_impl;
+mod confignode;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -49,10 +49,6 @@ struct Opts {
         help = "Database connection string, examle: postgres://myuser:mypassword@localhost/mydb?options=--search_path%3Dmyschema"
     )]
     database: Option<String>,
-
-    /// Database connection string
-    #[arg(short, long)]
-    write_database_token: Option<String>,
 
     /// Print effective config
     #[arg(long)]
@@ -79,12 +75,15 @@ fn init_logger(cli_opts: &Opts) {
 }
 
 struct SqlNode {
-    app_state: AppState,
+    app_state: SharedAppState,
 }
 
 shvclient::impl_static_node! {
     SqlNode(&self, request, client_cmd_tx) {
         "query" [None, Read, QUERY_PARAMS, QUERY_RESULT] (query: QueryAndParams) => {
+            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Read, self.app_state.clone(), "", AccessOp::Query).await {
+                return Some(Err(auth_error));
+            }
             let mut resp = request.prepare_response().unwrap_or_default();
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
@@ -102,7 +101,7 @@ shvclient::impl_static_node! {
         }
         "exec" [None, Read, EXEC_PARAMS, EXEC_RESULT] (query: QueryAndParams) => {
             let mut resp = request.prepare_response().unwrap_or_default();
-            if let Err(auth_error) = check_write_authorization(&request) {
+            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Write, self.app_state.clone(), "", AccessOp::Exec).await {
                 return Some(Err(auth_error));
             }
             let app_state = self.app_state.clone();
@@ -120,14 +119,14 @@ shvclient::impl_static_node! {
             None
         }
         "transaction" [None, Read, TRANSACTION_PARAMS, TRANSACTION_RESULT] (query: QueryAndParamsList) => {
-            let mut resp = request.prepare_response().unwrap_or_default();
-            if let Err(auth_error) = check_write_authorization(&request) {
+            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Write, self.app_state.clone(), "", AccessOp::Exec).await {
                 return Some(Err(auth_error));
             }
+            let mut resp = request.prepare_response().unwrap_or_default();
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
-                let state = app_state.read().await;
-                let result = sql_exec_transaction(&state, &query).await;
+                let db = app_state.read().await.db.clone();
+                let result = sql_exec_transaction(db, &query).await;
                 match result {
                     Ok(result) => resp.set_result(to_rpcvalue(&result).expect("serde should work")),
                     Err(e) => resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("SQL error: {}", e))),
@@ -139,6 +138,9 @@ shvclient::impl_static_node! {
             None
         }
         "list" [None, Read, LIST_PARAMS, LIST_RESULT] (param: RecListParam) => {
+            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Read, self.app_state.clone(), "", AccessOp::Query).await {
+                return Some(Err(auth_error));
+            }
             let mut resp = request.prepare_response().unwrap_or_default();
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
@@ -159,6 +161,9 @@ shvclient::impl_static_node! {
             None
         }
         "create" [None, Write, CREATE_PARAMS, CREATE_RESULT] (param: RecInsertParam) => {
+            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Write, self.app_state.clone(), &param.table, AccessOp::Create).await {
+                return Some(Err(auth_error));
+            }
             let mut resp = request.prepare_response().unwrap_or_default();
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
@@ -185,6 +190,9 @@ shvclient::impl_static_node! {
             None
         }
         "read" [None, Read, READ_PARAMS, READ_RESULT] (param: RecReadParam) => {
+            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Read, self.app_state.clone(), &param.table, AccessOp::Read).await {
+                return Some(Err(auth_error));
+            }
             let mut resp = request.prepare_response().unwrap_or_default();
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
@@ -205,6 +213,9 @@ shvclient::impl_static_node! {
             None
         }
         "update" [None, Write, UPDATE_PARAMS, UPDATE_RESULT] (param: RecUpdateParam) => {
+            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Write, self.app_state.clone(), &param.table, AccessOp::Update).await {
+                return Some(Err(auth_error));
+            }
             let mut resp = request.prepare_response().unwrap_or_default();
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
@@ -231,6 +242,9 @@ shvclient::impl_static_node! {
             None
         }
         "delete" [None, Write, DELETE_PARAMS, DELETE_RESULT] (param: RecDeleteParam) => {
+            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Write, self.app_state.clone(), &param.table, AccessOp::Delete).await {
+                return Some(Err(auth_error));
+            }
             let mut resp = request.prepare_response().unwrap_or_default();
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
@@ -306,56 +320,44 @@ async fn main() -> shvrpc::Result<()> {
             .await?)
     };
 
-    let app_state = AppState::new(RwLock::new(db));
+    let app_state = SharedAppState::new(RwLock::new(AppState {
+        db,
+        db_access: config.access.clone(),
+    }));
 
     // let app_tasks = move |_client_cmd_tx, _client_evt_rx| {
     //     tokio::task::spawn(emit_chng_task(client_cmd_tx, client_evt_rx, app_state));
     // };
 
-    // Initialize global configuration
-    init_global_config(cli_opts.write_database_token.clone())
-        .expect("Global config should only be set once");
-
     shvclient::Client::new()
         .app(DotAppNode::new(env!("CARGO_PKG_NAME")))
         .device(DotDeviceNode::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"), Some("00000".into())))
         .mount_static("sql", SqlNode { app_state: app_state.clone() })
+        .mount_static("config", ConfigNode { app_state: app_state.clone() })
         .run(&config.client)
         .await
 }
 
-// Global configuration for database access control
-#[derive(Debug)]
-pub struct GlobalConfig {
-    pub write_database_token: Option<String>,
-}
-
-static GLOBAL_CONFIG: OnceLock<GlobalConfig> = OnceLock::new();
-
-/// Initialize the global configuration
-pub fn init_global_config(write_database_token: Option<String>) -> Result<(), &'static str> {
-    GLOBAL_CONFIG
-        .set(GlobalConfig {
-            write_database_token,
-        })
-        .map_err(|_| "Global config should only be set once")
-}
-
 /// Check write authorization for database operations
-fn check_write_authorization(request: &shvrpc::RpcMessage) -> Result<(), shvrpc::rpcmessage::RpcError> {
+async fn check_write_authorization(
+    request: &shvrpc::RpcMessage,
+    access_level: AccessLevel,
+    app_state: SharedAppState,
+    table: &str,
+    op: AccessOp,
+) -> Result<(), shvrpc::rpcmessage::RpcError> {
     use shvrpc::{rpcmessage::{RpcError, RpcErrorCode}, RpcMessageMetaTags};
-
-    let config = GLOBAL_CONFIG
-        .get()
-        .expect("Global config should be initialized");
-    if let Some(write_token) = &config.write_database_token {
-        if let Some(user_id) = request.user_id()
-            && let Some(user_token) = user_id.split(';').next()
-            && user_token != write_token
-        {
-            return Ok(());
-        }
-
+    if request.access_level().unwrap_or(0) >= access_level as i32 {
+        // access level is set to read to enable user-id driven access control
+        // skip user-id check, if request access_level is high enough
+        return Ok(());
+    }
+    let user_id = request.user_id().unwrap_or_default();
+    let access_token = split_first_fragment(user_id, ';').0;
+    let ok = app_state.read().await.db_access.as_ref().map(|db_access| {
+        db_access.is_authorized(access_token, table, op)
+    }).unwrap_or(false);
+    if !ok {
         return Err(RpcError::new(
             RpcErrorCode::PermissionDenied,
             "Unauthorized",
@@ -363,3 +365,17 @@ fn check_write_authorization(request: &shvrpc::RpcMessage) -> Result<(), shvrpc:
     }
     Ok(())
 }
+
+fn split_first_fragment(path: &str, sep: char) -> (&str, &str) {
+    if let Some(ix) = path.find(sep) {
+        let dir = &path[0 .. ix];
+        let rest = &path[ix + 1..];
+        (dir, rest)
+    } else {
+        (path, "")
+    }
+}
+
+// fn split_first_path_fragment(path: &str) -> (&str, &str) {
+//     split_first_fragment(path, '/')
+// }

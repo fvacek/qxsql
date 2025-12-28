@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use chrono::FixedOffset;
 use serde::{Deserialize, Serialize};
 use shvproto::{RpcValue, from_rpcvalue};
-use std::collections::HashMap;
+use std::collections::{HashMap};
 
 pub enum ListId {
     IdIsEqual(i64),
@@ -156,6 +156,9 @@ pub enum DbValue {
     Null,
 }
 impl DbValue {
+    pub fn current_timestamp() -> Self {
+        DbValue::DateTime(chrono::Utc::now().into())
+    }
     pub fn to_bool(&self) -> bool {
         match self {
             DbValue::Bool(value) => *value,
@@ -163,10 +166,22 @@ impl DbValue {
             _ => false,
         }
     }
+    pub fn to_int(&self) -> Option<i64> {
+        match self {
+            DbValue::Int(value) => Some(*value),
+            _ => None,
+        }
+    }
     pub fn to_datetime(&self) -> Option<DateTime> {
         match self {
             DbValue::DateTime(value) => Some(*value),
             DbValue::String(value) => value.parse().ok(),
+            _ => None,
+        }
+    }
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            DbValue::String(value) => Some(value.as_str()),
             _ => None,
         }
     }
@@ -231,6 +246,27 @@ impl From<DateTime> for DbValue {
     }
 }
 
+impl TryFrom<&RpcValue> for DbValue {
+    type Error = String;
+
+    fn try_from(value: &RpcValue) -> Result<Self, Self::Error> {
+        match &value.value {
+            shvproto::Value::String(s) => Ok(DbValue::String(s.as_ref().clone())),
+            shvproto::Value::Int(n) => Ok(DbValue::Int(*n)),
+            shvproto::Value::UInt(n) => Ok(DbValue::Int(*n as i64)),
+            shvproto::Value::Bool(b) => Ok(DbValue::Bool(*b)),
+            shvproto::Value::Null => Ok(DbValue::Null),
+            shvproto::Value::DateTime(date_time) => Ok(DbValue::DateTime(date_time.to_chrono_datetime())),
+            shvproto::Value::Double(_) => Err("Double value not supported".to_string()),
+            shvproto::Value::Decimal(_) => Err("Decimal value not supported".to_string()),
+            shvproto::Value::Blob(_) => Err("Blob value not supported".to_string()),
+            shvproto::Value::List(_) => Err("List value not supported".to_string()),
+            shvproto::Value::Map(_) => Err("Map value not supported".to_string()),
+            shvproto::Value::IMap(_) => Err("IMap value not supported".to_string()),
+        }
+    }
+}
+
 pub type Record = HashMap<String, DbValue>;
 pub fn record_from_slice(arr: &[(&str, DbValue)]) -> Record {
     arr.iter()
@@ -238,11 +274,31 @@ pub fn record_from_slice(arr: &[(&str, DbValue)]) -> Record {
         .collect()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+// pub fn record_from_rpcvalue(val: &RpcValue) -> anyhow::Result<Record> {
+//     let rec: Result<HashMap<String, DbValue>, String> = val.as_map().iter()
+//         .map(|(key, value)| {
+//             DbValue::try_from(value).map(|db_value| (key.to_string(), db_value))
+//         })
+//         .collect();
+//     rec.map_err(|e| anyhow!(e))
+// }
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SqlOperation {
-    Insert,
+    Create,
+    Read,
     Update,
     Delete,
+}
+impl From<SqlOperation> for &str {
+    fn from(op: SqlOperation) -> Self {
+        match op {
+            SqlOperation::Create => "Create",
+            SqlOperation::Read => "Read",
+            SqlOperation::Update => "Update",
+            SqlOperation::Delete => "Delete",
+        }
+    }
 }
 
 /// Query and parameters tuple struct.
