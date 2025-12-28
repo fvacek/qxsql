@@ -83,7 +83,6 @@ pub enum AccessOp {
     Update,
     Delete,
     Exec,
-    Query,
 }
 impl From<AccessOp> for char {
     fn from(op: AccessOp) -> Self {
@@ -92,8 +91,7 @@ impl From<AccessOp> for char {
             AccessOp::Read => 'R',
             AccessOp::Update => 'U',
             AccessOp::Delete => 'D',
-            AccessOp::Exec => 'E',
-            AccessOp::Query => 'Q',
+            AccessOp::Exec => 'X',
         }
     }
 }
@@ -111,7 +109,7 @@ mod tests {
         let mut admin_tables = BTreeMap::new();
         admin_tables.insert("users".to_string(), "CRUD".to_string());
         admin_tables.insert("orders".to_string(), "RU".to_string());
-        
+
         let admin_role = Role {
             access: TableAccess {
                 tables: admin_tables,
@@ -165,13 +163,13 @@ mod tests {
     #[test]
     fn test_is_authorized_valid_token_table_specific_permission() {
         let db_access = create_test_db_access();
-        
+
         // Admin token should have CRUD access to users table
         assert!(db_access.is_authorized("admin_token", "users", AccessOp::Create));
         assert!(db_access.is_authorized("admin_token", "users", AccessOp::Read));
         assert!(db_access.is_authorized("admin_token", "users", AccessOp::Update));
         assert!(db_access.is_authorized("admin_token", "users", AccessOp::Delete));
-        
+
         // Admin token should have limited access to orders table
         assert!(!db_access.is_authorized("admin_token", "orders", AccessOp::Create));
         assert!(db_access.is_authorized("admin_token", "orders", AccessOp::Read));
@@ -182,7 +180,7 @@ mod tests {
     #[test]
     fn test_is_authorized_fallback_permission() {
         let db_access = create_test_db_access();
-        
+
         // Admin token should fall back to Read permission for unknown tables
         assert!(!db_access.is_authorized("admin_token", "unknown_table", AccessOp::Create));
         assert!(db_access.is_authorized("admin_token", "unknown_table", AccessOp::Read));
@@ -193,20 +191,19 @@ mod tests {
     #[test]
     fn test_is_authorized_readonly_role() {
         let db_access = create_test_db_access();
-        
+
         // Readonly token should only have read access
         assert!(!db_access.is_authorized("readonly_token", "users", AccessOp::Create));
         assert!(db_access.is_authorized("readonly_token", "users", AccessOp::Read));
         assert!(!db_access.is_authorized("readonly_token", "users", AccessOp::Update));
         assert!(!db_access.is_authorized("readonly_token", "users", AccessOp::Delete));
         assert!(!db_access.is_authorized("readonly_token", "users", AccessOp::Exec));
-        assert!(!db_access.is_authorized("readonly_token", "users", AccessOp::Query));
     }
 
     #[test]
     fn test_is_authorized_multiple_roles() {
         let db_access = create_test_db_access();
-        
+
         // Multi-role token should have admin permissions (most permissive role wins)
         assert!(db_access.is_authorized("multi_role_token", "users", AccessOp::Create));
         assert!(db_access.is_authorized("multi_role_token", "users", AccessOp::Read));
@@ -217,7 +214,7 @@ mod tests {
     #[test]
     fn test_is_authorized_invalid_token() {
         let db_access = create_test_db_access();
-        
+
         // Invalid token should have no access
         assert!(!db_access.is_authorized("invalid_token", "users", AccessOp::Read));
         assert!(!db_access.is_authorized("invalid_token", "users", AccessOp::Create));
@@ -228,7 +225,7 @@ mod tests {
     #[test]
     fn test_is_authorized_no_access_role() {
         let db_access = create_test_db_access();
-        
+
         // No access token should have no permissions
         assert!(!db_access.is_authorized("no_access_token", "users", AccessOp::Read));
         assert!(!db_access.is_authorized("no_access_token", "users", AccessOp::Create));
@@ -239,7 +236,7 @@ mod tests {
     #[test]
     fn test_is_authorized_empty_db_access() {
         let db_access = DbAccess::default();
-        
+
         // Empty DbAccess should deny all requests
         assert!(!db_access.is_authorized("any_token", "any_table", AccessOp::Read));
         assert!(!db_access.is_authorized("any_token", "any_table", AccessOp::Create));
@@ -253,8 +250,7 @@ mod tests {
         assert_eq!(char::from(AccessOp::Read), 'R');
         assert_eq!(char::from(AccessOp::Update), 'U');
         assert_eq!(char::from(AccessOp::Delete), 'D');
-        assert_eq!(char::from(AccessOp::Exec), 'E');
-        assert_eq!(char::from(AccessOp::Query), 'Q');
+        assert_eq!(char::from(AccessOp::Exec), 'X');
     }
 
     #[test]
@@ -263,8 +259,8 @@ mod tests {
         let mut roles = BTreeMap::new();
 
         let mut exec_tables = BTreeMap::new();
-        exec_tables.insert("procedures".to_string(), "EQ".to_string());
-        
+        exec_tables.insert("procedures".to_string(), "XR".to_string());
+
         let exec_role = Role {
             access: TableAccess {
                 tables: exec_tables,
@@ -282,8 +278,7 @@ mod tests {
 
         // Test Exec and Query operations
         assert!(db_access.is_authorized("exec_token", "procedures", AccessOp::Exec));
-        assert!(db_access.is_authorized("exec_token", "procedures", AccessOp::Query));
-        assert!(!db_access.is_authorized("exec_token", "procedures", AccessOp::Read));
+        assert!(db_access.is_authorized("exec_token", "procedures", AccessOp::Read));
         assert!(!db_access.is_authorized("exec_token", "procedures", AccessOp::Create));
     }
 }

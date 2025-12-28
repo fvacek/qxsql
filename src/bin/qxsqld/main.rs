@@ -81,7 +81,7 @@ struct SqlNode {
 shvclient::impl_static_node! {
     SqlNode(&self, request, client_cmd_tx) {
         "query" [None, Read, QUERY_PARAMS, QUERY_RESULT] (query: QueryAndParams) => {
-            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Read, self.app_state.clone(), "", AccessOp::Query).await {
+            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Read, self.app_state.clone(), "", AccessOp::Read).await {
                 return Some(Err(auth_error));
             }
             let mut resp = request.prepare_response().unwrap_or_default();
@@ -138,7 +138,7 @@ shvclient::impl_static_node! {
             None
         }
         "list" [None, Read, LIST_PARAMS, LIST_RESULT] (param: RecListParam) => {
-            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Read, self.app_state.clone(), "", AccessOp::Query).await {
+            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Read, self.app_state.clone(), "", AccessOp::Read).await {
                 return Some(Err(auth_error));
             }
             let mut resp = request.prepare_response().unwrap_or_default();
