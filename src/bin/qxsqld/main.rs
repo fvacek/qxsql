@@ -99,7 +99,7 @@ shvclient::impl_static_node! {
             });
             None
         }
-        "exec" [None, Read, EXEC_PARAMS, EXEC_RESULT] (query: QueryAndParams) => {
+        "exec" [None, Write, EXEC_PARAMS, EXEC_RESULT] (query: QueryAndParams) => {
             let mut resp = request.prepare_response().unwrap_or_default();
             if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Write, self.app_state.clone(), "", AccessOp::Exec).await {
                 return Some(Err(auth_error));
