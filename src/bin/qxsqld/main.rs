@@ -42,11 +42,15 @@ struct Opts {
     #[arg(short, long)]
     mount: Option<String>,
 
+    /// Device ID on broker connected to.
+    #[arg(long)]
+    device_id: Option<String>,
+
     /// Database connection string
     #[arg(
         short,
         long,
-        help = "Database connection string, examle: postgres://myuser:mypassword@localhost/mydb?options=--search_path%3Dmyschema"
+        help = "Database connection string, examle: postgres://myuser:mypassword@localhost/mydb?options=--search_path%3Dmyschema or sqlite:///tmp/db.sqlite or sqlite::memory:"
     )]
     database: Option<String>,
 
@@ -294,6 +298,9 @@ async fn main() -> shvrpc::Result<()> {
     }
     if let Some(mount) = cli_opts.mount {
         config.client.mount = Some(mount);
+    }
+    if let Some(device_id) = cli_opts.device_id {
+        config.client.device_id = Some(device_id);
     }
 
     if cli_opts.print_config {
