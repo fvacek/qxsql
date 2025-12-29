@@ -78,7 +78,17 @@ impl StaticNode for AppNode {
                 }
             }
             Some(METH_EXIT) => {
-                todo!()
+                log::info!("Exit method called, initiating graceful shutdown");
+                
+                // Take the shutdown sender from the app state and trigger shutdown
+                if let Some(shutdown_tx) = self.app_state.write().await.shutdown_tx.take() {
+                    let _ = shutdown_tx.send(());
+                    log::info!("Shutdown signal sent successfully");
+                    Some(Ok(true.into()))
+                } else {
+                    log::warn!("Shutdown already initiated or sender not available");
+                    Some(Ok(false.into()))
+                }
             }
             _ => self.dot_app_node.process_request(request, client_command_sender).await,
         }

@@ -10,7 +10,7 @@ use shvrpc::{
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::sqlite::SqlitePoolOptions;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, oneshot};
 
 use clap::Parser;
 use log::*;
@@ -327,21 +327,34 @@ async fn main() -> shvrpc::Result<()> {
             .await?)
     };
 
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    
     let app_state = SharedAppState::new(RwLock::new(AppState {
         db,
         db_access: config.access.clone(),
+        shutdown_tx: Some(shutdown_tx),
     }));
 
     // let app_tasks = move |_client_cmd_tx, _client_evt_rx| {
     //     tokio::task::spawn(emit_chng_task(client_cmd_tx, client_evt_rx, app_state));
     // };
 
-    shvclient::Client::new()
+    let client_future = shvclient::Client::new()
         .device(DotDeviceNode::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"), Some("00000".into())))
         .mount_static("sql", SqlNode { app_state: app_state.clone() })
         .mount_static(".app", AppNode::new(env!("CARGO_PKG_NAME"), app_state))
-        .run(&config.client)
-        .await
+        .run(&config.client);
+
+    tokio::select! {
+        result = client_future => {
+            log::info!("Client finished normally");
+            result
+        }
+        _ = shutdown_rx => {
+            log::info!("Received shutdown signal, exiting gracefully");
+            Ok(())
+        }
+    }
 }
 
 /// Check write authorization for database operations

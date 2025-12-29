@@ -252,7 +252,7 @@ mod tests {
             .execute(&pool)
             .await?;
 
-        let app_state = SharedAppState::new(RwLock::new(crate::appstate::AppState{db: DbPool::Sqlite(pool), db_access: None}));
+        let app_state = SharedAppState::new(RwLock::new(crate::appstate::AppState{db: DbPool::Sqlite(pool), db_access: None, shutdown_tx: None}));
         Ok(QxSql(app_state))
     }
 
