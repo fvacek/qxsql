@@ -3,7 +3,7 @@ use qxsql::{
     sql::{QxSqlApi, RecListParam, CREATE_PARAMS, CREATE_RESULT, DELETE_PARAMS, DELETE_RESULT, EXEC_PARAMS, EXEC_RESULT, LIST_PARAMS, LIST_RESULT, QUERY_PARAMS, QUERY_RESULT, READ_PARAMS, READ_RESULT, TRANSACTION_PARAMS, TRANSACTION_RESULT, UPDATE_PARAMS, UPDATE_RESULT}, string_list_to_ref_vec, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam
 };
 use sql_impl::{QxSql, DbPool, sql_exec_transaction};
-use shvclient::appnodes::{DotAppNode, DotDeviceNode};
+use shvclient::appnodes::{DotDeviceNode};
 
 use shvrpc::{
     metamethod::AccessLevel, rpcmessage::{RpcError, RpcErrorCode}
@@ -19,13 +19,13 @@ use shvrpc::util::parse_log_verbosity;
 use simple_logger::SimpleLogger;
 use url::Url;
 
-use crate::{appstate::{AppState, SharedAppState}, config::AccessOp, confignode::ConfigNode};
+use crate::{appnode::AppNode, appstate::{AppState, SharedAppState}, config::AccessOp};
 
 
 mod appstate;
 mod config;
 mod sql_impl;
-mod confignode;
+mod appnode;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -337,10 +337,9 @@ async fn main() -> shvrpc::Result<()> {
     // };
 
     shvclient::Client::new()
-        .app(DotAppNode::new(env!("CARGO_PKG_NAME")))
         .device(DotDeviceNode::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"), Some("00000".into())))
         .mount_static("sql", SqlNode { app_state: app_state.clone() })
-        .mount_static("config", ConfigNode { app_state: app_state.clone() })
+        .mount_static(".app", AppNode::new(env!("CARGO_PKG_NAME"), app_state))
         .run(&config.client)
         .await
 }
