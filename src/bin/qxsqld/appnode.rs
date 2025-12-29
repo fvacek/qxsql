@@ -39,7 +39,7 @@ fn get_methods() -> &'static [MetaMethod] {
 
 const METH_DB_ACCESS: &str = "dbAccess";
 const METH_SET_DB_ACCESS: &str = "setDbAccess";
-const METH_EXIT: &str = "exit";
+const METH_QUIT: &str = "quit";
 
 pub const APP_METHODS: &[MetaMethod] = &[
     MetaMethod::new_static(
@@ -49,7 +49,7 @@ pub const APP_METHODS: &[MetaMethod] = &[
         METH_SET_DB_ACCESS, Flag::None as u32, AccessLevel::Config, "!DbAccess", "", &[], "",
     ),
     MetaMethod::new_static(
-        METH_EXIT, Flag::None as u32, AccessLevel::Write, "", "", &[], "",
+        METH_QUIT, Flag::None as u32, AccessLevel::Write, "", "", &[], "",
     ),
 ];
 
@@ -77,9 +77,9 @@ impl StaticNode for AppNode {
                     Err(err) => Some(Err(err)),
                 }
             }
-            Some(METH_EXIT) => {
+            Some(METH_QUIT) => {
                 log::info!("Exit method called, initiating graceful shutdown");
-                
+
                 // Take the shutdown sender from the app state and trigger shutdown
                 if let Some(shutdown_tx) = self.app_state.write().await.shutdown_tx.take() {
                     let _ = shutdown_tx.send(());
