@@ -13,12 +13,30 @@ jobs:
   build:
 
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features: ["", "recchng-smol", "recchng-tokio"]
 
     steps:
     - uses: actions/checkout@v4
     - name: Build
-      run: cargo build --all-features --verbose
+      run: |
+        if [ "${{ matrix.features }}" = "" ]; then
+          cargo build --verbose
+        else
+          cargo build --features "${{ matrix.features }}" --verbose
+        fi
     - name: Clippy
-      run: cargo clippy --all-features --verbose
+      run: |
+        if [ "${{ matrix.features }}" = "" ]; then
+          cargo clippy --verbose
+        else
+          cargo clippy --features "${{ matrix.features }}" --verbose
+        fi
     - name: Run tests
-      run: cargo test --all-features --verbose
+      run: |
+        if [ "${{ matrix.features }}" = "" ]; then
+          cargo test --verbose
+        else
+          cargo test --features "${{ matrix.features }}" --verbose
+        fi
