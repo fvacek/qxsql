@@ -201,7 +201,7 @@ fn db_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<DbVal
 pub struct QxSql(pub SharedAppState);
 
 #[async_trait]
-impl qxsql::sql::QxSqlApi for QxSql {
+impl qxsql::QxSqlApi for QxSql {
     async fn query(&self, query: &str, params: Option<&Record>) -> anyhow::Result<QueryResult> {
         let db = self.0.read().await.db.clone();
         let empty_params = Record::default();
@@ -221,6 +221,8 @@ impl qxsql::sql::QxSqlApi for QxSql {
         }
     }
 }
+
+impl qxsql::QxSqlApiRecChng for QxSql { }
 
 #[cfg(test)]
 mod tests {

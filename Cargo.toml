@@ -2,6 +2,7 @@
 name = "qxsql"
 version = "0.1.1"
 edition = "2024"
+default-run = "qxsqld"
 
 [lib]
 name = "qxsql"
@@ -23,11 +24,11 @@ anyhow = "1.0"
 regex = "1.9"
 shvproto = { version = "3.6.27", features = ["serde"] }
 log = { version = "0.4" }
-shvclient = { git = "https://github.com/silicon-heaven/libshvclient-rs", branch = "main", features = ["tokio"], optional = true }
 
 # -----------------------------
 # Optional dependencies (used only by the qxsqld binary)
 # -----------------------------
+shvclient = { git = "https://github.com/silicon-heaven/libshvclient-rs", branch = "main", optional = true }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "postgres", "chrono"], optional = true }
 shvrpc = { version = "7.1.3", optional = true }
 futures = { version = "0.3.30", optional = true }
@@ -46,10 +47,18 @@ duration-str = { version = "0.17", optional = true }
 # -----------------------------
 [features]
 default = []
+recchng = [ "shvrpc" ]
+recchng-smol = [
+    "recchng",
+    "shvclient/smol",
+]
+recchng-tokio = [
+    "recchng",
+    "shvclient/tokio",
+]
 qxsqld = [
+    "recchng-tokio",
     "sqlx",
-    "shvrpc",
-    "shvclient",
     "futures",
     "futures-util",
     "tokio",

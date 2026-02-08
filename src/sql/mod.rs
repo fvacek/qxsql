@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use shvproto::{RpcValue, from_rpcvalue};
 use std::collections::{HashMap};
 
+#[cfg(feature = "recchng")]
+pub mod recchng;
+
 pub enum ListId {
     IdIsEqual(i64),
     IdsGreaterThan(i64),
@@ -352,7 +355,7 @@ pub struct RecUpdateParam {
     pub id: i64,
     pub record: Record,
     #[serde(default)]
-    pub issuer: String,
+    pub issuer: Option<String>,
 }
 impl TryFrom<&RpcValue> for RecUpdateParam {
     type Error = String;
@@ -367,7 +370,7 @@ pub struct RecInsertParam {
     pub table: String,
     pub record: Record,
     #[serde(default)]
-    pub issuer: String,
+    pub issuer: Option<String>,
 }
 impl TryFrom<&RpcValue> for RecInsertParam {
     type Error = String;
@@ -416,7 +419,7 @@ pub struct RecDeleteParam {
     pub table: String,
     pub id: i64,
     #[serde(default)]
-    pub issuer: String,
+    pub issuer: Option<String>,
 }
 impl TryFrom<&RpcValue> for RecDeleteParam {
     type Error = String;
@@ -465,5 +468,5 @@ pub struct RecChng {
     pub id: i64,
     pub record: Option<Record>,
     pub op: RecOp,
-    pub issuer: String,
+    pub issuer: Option<String>,
 }

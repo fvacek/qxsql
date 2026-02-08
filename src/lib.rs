@@ -5,8 +5,10 @@
 
 pub mod sql;
 pub mod sql_utils;
+#[cfg(feature = "recchng")]
+pub use sql::recchng::QxSqlApiRecChng;
 
-// Re-export commonly used types
+pub use sql::QxSqlApi;
 pub use sql::{
     DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam,
     RecInsertParam, RecOp, RecReadParam, RecUpdateParam, SqlOperation,

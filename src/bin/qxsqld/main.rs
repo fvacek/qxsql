@@ -1,6 +1,6 @@
 
 use qxsql::{
-    sql::{QxSqlApi, RecListParam, CREATE_PARAMS, CREATE_RESULT, DELETE_PARAMS, DELETE_RESULT, EXEC_PARAMS, EXEC_RESULT, LIST_PARAMS, LIST_RESULT, QUERY_PARAMS, QUERY_RESULT, READ_PARAMS, READ_RESULT, TRANSACTION_PARAMS, TRANSACTION_RESULT, UPDATE_PARAMS, UPDATE_RESULT}, string_list_to_ref_vec, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam, RecInsertParam, RecOp, RecReadParam, RecUpdateParam
+    QueryAndParams, QueryAndParamsList, QxSqlApiRecChng, RecDeleteParam, RecInsertParam, RecReadParam, RecUpdateParam, sql::{CREATE_PARAMS, CREATE_RESULT, DELETE_PARAMS, DELETE_RESULT, EXEC_PARAMS, EXEC_RESULT, LIST_PARAMS, LIST_RESULT, QUERY_PARAMS, QUERY_RESULT, QxSqlApi, READ_PARAMS, READ_RESULT, RecListParam, TRANSACTION_PARAMS, TRANSACTION_RESULT, UPDATE_PARAMS, UPDATE_RESULT}, string_list_to_ref_vec
 };
 use sql_impl::{QxSql, DbPool, sql_exec_transaction};
 use shvclient::appnodes::{DotDeviceNode};
@@ -172,8 +172,8 @@ shvclient::impl_static_node! {
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
                 let qxsql = QxSql(app_state);
-                let result = qxsql.create_record(&param.table, &param.record).await;
-                let insert_id = match result {
+                let result = qxsql.create_record_with_recchng(&param.table, &param.record, client_cmd_tx.clone(), param.issuer).await;
+                match result {
                     Ok(result) => {
                         resp.set_result(to_rpcvalue(&result).expect("serde should work"));
                         Some(result)
@@ -184,12 +184,6 @@ shvclient::impl_static_node! {
                     }
                 };
                 client_cmd_tx.send_message(resp).unwrap_or_else(|err| log::error!("sql_select: Cannot send response ({err})"));
-                if let Some(insert_id) = insert_id {
-                    let recchng = RecChng {table:param.table, id:insert_id, record:Some(param.record), op: RecOp::Insert, issuer:param.issuer };
-                    let rec = to_rpcvalue(&recchng).expect("serde should work");
-                    client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal("sql", "recchng", Some(rec)))
-                                    .unwrap_or_else(|err| log::error!("Cannot send signal ({err})"));
-                }
             });
             None
         }
@@ -224,24 +218,15 @@ shvclient::impl_static_node! {
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
                 let qxsql = QxSql(app_state);
-                let result = qxsql.update_record(&param.table, param.id, &param.record).await;
-                let mut send_signal = false;
+                let result = qxsql.update_record_with_recchng(&param.table, param.id, &param.record, client_cmd_tx.clone(), param.issuer).await;
                 match result {
                     Ok(result) => {
-                        send_signal = result;
                         resp.set_result(to_rpcvalue(&result).expect("serde should work"));
                     },
                     Err(e) => {
                         resp.set_error(RpcError::new(RpcErrorCode::MethodCallException, format!("Update record error: {}", e)));
                     }
                 };
-                client_cmd_tx.send_message(resp).unwrap_or_else(|err| log::error!("sql_select: Cannot send response ({err})"));
-                if send_signal {
-                    let recchng = RecChng {table:param.table, id:param.id, record:Some(param.record), op: RecOp::Update, issuer:param.issuer };
-                    let rec = to_rpcvalue(&recchng).expect("serde should work");
-                    client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal("sql", "recchng", Some(rec)))
-                                    .unwrap_or_else(|err| log::error!("Cannot send signal ({err})"));
-                }
             });
             None
         }
@@ -253,8 +238,8 @@ shvclient::impl_static_node! {
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
                 let qxsql = QxSql(app_state);
-                let result = qxsql.delete_record(&param.table, param.id).await;
-                let was_deleted = match result {
+                let result = qxsql.delete_record_with_recchng(&param.table, param.id, client_cmd_tx.clone(), param.issuer).await;
+                match result {
                     Ok(result) => {
                         resp.set_result(to_rpcvalue(&result).expect("serde should work"));
                         Some(result)
@@ -264,13 +249,6 @@ shvclient::impl_static_node! {
                         None
                     }
                 };
-                client_cmd_tx.send_message(resp).unwrap_or_else(|err| log::error!("sql_select: Cannot send response ({err})"));
-                if let Some(was_deleted) = was_deleted && was_deleted {
-                    let recchng = RecChng {table:param.table, id:param.id, record:None, op: RecOp::Delete, issuer:param.issuer };
-                    let rec = to_rpcvalue(&recchng).expect("serde should work");
-                    client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal("sql", "recchng", Some(rec)))
-                                    .unwrap_or_else(|err| log::error!("Cannot send signal ({err})"));
-                }
             });
             None
         }
@@ -328,7 +306,7 @@ async fn main() -> shvrpc::Result<()> {
     };
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    
+
     let app_state = SharedAppState::new(RwLock::new(AppState {
         db,
         db_access: config.access.clone(),
