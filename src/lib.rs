@@ -3,11 +3,13 @@
 //! This library provides functionality to bridge SQL databases with the SHV protocol,
 //! allowing SQL operations to be performed via SHV RPC calls.
 
+mod logger;
 pub mod sql;
 pub mod sql_utils;
 #[cfg(feature = "recchng")]
 pub use sql::recchng::QxSqlApiRecChng;
 
+pub use logger::setup_flexi_logger;
 pub use sql::QxSqlApi;
 pub use sql::{
     DbValue, QueryAndParams, QueryAndParamsList, RecChng, RecDeleteParam,

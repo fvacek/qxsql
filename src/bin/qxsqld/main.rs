@@ -15,8 +15,6 @@ use tokio::sync::{RwLock, oneshot};
 use clap::Parser;
 use log::*;
 use shvproto::to_rpcvalue;
-use shvrpc::util::parse_log_verbosity;
-use simple_logger::SimpleLogger;
 use url::Url;
 
 use crate::{appnode::AppNode, appstate::{AppState, SharedAppState}, config::AccessOp};
@@ -61,21 +59,6 @@ struct Opts {
     /// Verbose mode (module, .)
     #[arg(short, long)]
     verbose: Option<String>,
-}
-
-fn init_logger(cli_opts: &Opts) {
-    let mut logger = SimpleLogger::new();
-    logger = logger.with_level(LevelFilter::Info);
-    if let Some(module_names) = &cli_opts.verbose {
-        for (module, level) in parse_log_verbosity(module_names, module_path!()) {
-            if let Some(module) = module {
-                logger = logger.with_module_level(module, level);
-            } else {
-                logger = logger.with_level(level);
-            }
-        }
-    }
-    logger.init().unwrap();
 }
 
 struct SqlNode {
@@ -258,7 +241,7 @@ shvclient::impl_static_node! {
 #[tokio::main]
 async fn main() -> shvrpc::Result<()> {
     let cli_opts = Opts::parse();
-    init_logger(&cli_opts);
+    qxsql::setup_flexi_logger(cli_opts.verbose.as_ref().map(|x| x.as_str()))?;
 
     let mut config = if let Some(config_path) = cli_opts.config {
         info!("Loading config file {config_path}");
