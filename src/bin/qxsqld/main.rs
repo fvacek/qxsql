@@ -68,7 +68,7 @@ struct SqlNode {
 shvclient::impl_static_node! {
     SqlNode(&self, request, client_cmd_tx) {
         "query" [None, Read, QUERY_PARAMS, QUERY_RESULT] (query: QueryAndParams) => {
-            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Read, self.app_state.clone(), "", AccessOp::Read).await {
+            if let Err(auth_error) = check_db_access(&request, AccessLevel::Read, self.app_state.clone(), "", AccessOp::Read).await {
                 return Some(Err(auth_error));
             }
             let mut resp = request.prepare_response().unwrap_or_default();
@@ -88,7 +88,7 @@ shvclient::impl_static_node! {
         }
         "exec" [None, Write, EXEC_PARAMS, EXEC_RESULT] (query: QueryAndParams) => {
             let mut resp = request.prepare_response().unwrap_or_default();
-            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Write, self.app_state.clone(), "", AccessOp::Exec).await {
+            if let Err(auth_error) = check_db_access(&request, AccessLevel::Write, self.app_state.clone(), "", AccessOp::Exec).await {
                 return Some(Err(auth_error));
             }
             let app_state = self.app_state.clone();
@@ -106,7 +106,7 @@ shvclient::impl_static_node! {
             None
         }
         "transaction" [None, Read, TRANSACTION_PARAMS, TRANSACTION_RESULT] (query: QueryAndParamsList) => {
-            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Write, self.app_state.clone(), "", AccessOp::Exec).await {
+            if let Err(auth_error) = check_db_access(&request, AccessLevel::Write, self.app_state.clone(), "", AccessOp::Exec).await {
                 return Some(Err(auth_error));
             }
             let mut resp = request.prepare_response().unwrap_or_default();
@@ -125,7 +125,7 @@ shvclient::impl_static_node! {
             None
         }
         "list" [None, Read, LIST_PARAMS, LIST_RESULT] (param: RecListParam) => {
-            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Read, self.app_state.clone(), "", AccessOp::Read).await {
+            if let Err(auth_error) = check_db_access(&request, AccessLevel::Read, self.app_state.clone(), "", AccessOp::Read).await {
                 return Some(Err(auth_error));
             }
             let mut resp = request.prepare_response().unwrap_or_default();
@@ -148,7 +148,7 @@ shvclient::impl_static_node! {
             None
         }
         "create" [None, Write, CREATE_PARAMS, CREATE_RESULT] (param: RecInsertParam) => {
-            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Write, self.app_state.clone(), &param.table, AccessOp::Create).await {
+            if let Err(auth_error) = check_db_access(&request, AccessLevel::Write, self.app_state.clone(), &param.table, AccessOp::Create).await {
                 return Some(Err(auth_error));
             }
             let mut resp = request.prepare_response().unwrap_or_default();
@@ -171,7 +171,7 @@ shvclient::impl_static_node! {
             None
         }
         "read" [None, Read, READ_PARAMS, READ_RESULT] (param: RecReadParam) => {
-            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Read, self.app_state.clone(), &param.table, AccessOp::Read).await {
+            if let Err(auth_error) = check_db_access(&request, AccessLevel::Read, self.app_state.clone(), &param.table, AccessOp::Read).await {
                 return Some(Err(auth_error));
             }
             let mut resp = request.prepare_response().unwrap_or_default();
@@ -194,7 +194,7 @@ shvclient::impl_static_node! {
             None
         }
         "update" [None, Write, UPDATE_PARAMS, UPDATE_RESULT] (param: RecUpdateParam) => {
-            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Write, self.app_state.clone(), &param.table, AccessOp::Update).await {
+            if let Err(auth_error) = check_db_access(&request, AccessLevel::Write, self.app_state.clone(), &param.table, AccessOp::Update).await {
                 return Some(Err(auth_error));
             }
             let mut resp = request.prepare_response().unwrap_or_default();
@@ -214,7 +214,7 @@ shvclient::impl_static_node! {
             None
         }
         "delete" [None, Write, DELETE_PARAMS, DELETE_RESULT] (param: RecDeleteParam) => {
-            if let Err(auth_error) = check_write_authorization(&request, AccessLevel::Write, self.app_state.clone(), &param.table, AccessOp::Delete).await {
+            if let Err(auth_error) = check_db_access(&request, AccessLevel::Write, self.app_state.clone(), &param.table, AccessOp::Delete).await {
                 return Some(Err(auth_error));
             }
             let mut resp = request.prepare_response().unwrap_or_default();
@@ -319,7 +319,7 @@ async fn main() -> shvrpc::Result<()> {
 }
 
 /// Check write authorization for database operations
-async fn check_write_authorization(
+async fn check_db_access(
     request: &shvrpc::RpcMessage,
     access_level: AccessLevel,
     app_state: SharedAppState,
