@@ -8,26 +8,6 @@ use std::collections::{HashMap};
 #[cfg(feature = "recchng")]
 pub mod recchng;
 
-pub enum ListId {
-    IdIsEqual(i64),
-    IdsGreaterThan(i64),
-    None,
-}
-impl ListId {
-    pub fn new_is_equal(id: Option<i64>) -> Self {
-        match id {
-            Some(id) => ListId::IdIsEqual(id),
-            None => ListId::None,
-        }
-    }
-    pub fn new_greater_than(id: Option<i64>) -> Self {
-        match id {
-            Some(id) => ListId::IdsGreaterThan(id),
-            None => ListId::None,
-        }
-    }
-}
-
 pub const QUERY_PARAMS: &str = "[s:query,{s|i|b|t|n}:params]";
 pub const QUERY_RESULT: &str = "{{s:name}:fields,[[s|i|b|t|n]]:rows}";
 pub const EXEC_PARAMS: &str = "[s:query,{s|i|b|t|n}:params]";
@@ -54,14 +34,14 @@ pub trait QxSqlApi: Send + Sync + Sized {
         &self,
         table: &str,
         fields: Option<Vec<&str>>,
-        ids_greater_than: Option<i64>,
+        from_id: Option<i64>,
         limit: Option<i64>,
     ) -> anyhow::Result<Vec<Record>> {
         list_one_or_more_records(
             self,
             table,
             fields,
-            ListId::new_greater_than(ids_greater_than),
+            from_id,
             limit,
         )
         .await
@@ -95,7 +75,7 @@ pub trait QxSqlApi: Send + Sync + Sized {
         fields: Option<Vec<&str>>,
     ) -> anyhow::Result<Option<Record>> {
         let records =
-            list_one_or_more_records(self, table, fields, ListId::new_is_equal(Some(id)), None)
+            list_one_or_more_records(self, table, fields, Some(id), Some(1))
                 .await?;
         Ok(records.into_iter().next())
     }
@@ -122,19 +102,13 @@ async fn list_one_or_more_records<T: QxSqlApi>(
     sql: &T,
     table: &str,
     fields: Option<Vec<&str>>,
-    id: ListId,
+    id: Option<i64>,
     limit: Option<i64>,
 ) -> anyhow::Result<Vec<Record>> {
     let fields_str = fields.unwrap_or_else(|| vec!["*"]).join(", ");
     let mut qs = format!("SELECT {} FROM {}", fields_str, table);
-    match id {
-        ListId::IdIsEqual(id) => {
-            qs.push_str(&format!(" WHERE id = {}", id));
-        }
-        ListId::IdsGreaterThan(id) => {
-            qs.push_str(&format!(" WHERE id > {}", id));
-        }
-        ListId::None => {}
+    if let Some(id) = id {
+        qs.push_str(&format!(" WHERE id >= {}", id));
     }
     if let Some(limit) = limit {
         qs.push_str(&format!(" LIMIT {}", limit));
