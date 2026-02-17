@@ -29,21 +29,21 @@ impl Default for DbConfig {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct DbAccess {
-    pub tokens: BTreeMap<String, Token>,
+    pub tokens: BTreeMap<String, Vec<String>>,
     pub roles: BTreeMap<String, Role>,
 }
 impl DbAccess {
     pub fn is_authorized(&self, access_token: &str, table_name: &str, op: AccessOp) -> bool {
-        if let Some(token) = self.tokens.get(access_token) {
+        if let Some(roles) = self.tokens.get(access_token) {
             let op_c: char = op.into();
 
-            for role in token.roles.iter() {
-                if let Some(role) = self.roles.get(role) {
-                    let rules = role.access.tables.get(table_name)
-                        .unwrap_or(&role.access.fallback);
-
-                    if rules.contains(op_c) {
-                        return true;
+            for token_role in roles.iter() {
+                if let Some(access_role) = self.roles.get(token_role) {
+                    let rules = access_role.tables.get(table_name).or(access_role.tables.get("*"));
+                    if let Some(rules) = rules {
+                        if rules.contains(op_c) {
+                            return true;
+                        }
                     }
                 }
             }
@@ -63,17 +63,8 @@ impl TryFrom<&RpcValue> for DbAccess {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct Token {
-    pub roles: Vec<String>,
-}
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Role {
-    pub access: TableAccess,
-}
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct TableAccess {
     pub tables: BTreeMap<String, String>,
-    pub fallback: String,
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
@@ -107,54 +98,37 @@ mod tests {
 
         // Create a role with table-specific permissions
         let mut admin_tables = BTreeMap::new();
-        admin_tables.insert("users".to_string(), "CRUD".to_string());
+        admin_tables.insert("users".to_string(), "CRUDX".to_string());
         admin_tables.insert("orders".to_string(), "RU".to_string());
 
         let admin_role = Role {
-            access: TableAccess {
-                tables: admin_tables,
-                fallback: "R".to_string(),
-            },
+            tables: admin_tables,
         };
         roles.insert("admin".to_string(), admin_role);
 
         // Create a read-only role
         let readonly_role = Role {
-            access: TableAccess {
-                tables: BTreeMap::new(),
-                fallback: "R".to_string(),
-            },
+            tables: BTreeMap::from([("*".to_string(), "R".to_string())]),
         };
         roles.insert("readonly".to_string(), readonly_role);
 
         // Create a role with no permissions
         let no_access_role = Role {
-            access: TableAccess {
-                tables: BTreeMap::new(),
-                fallback: "".to_string(),
-            },
+            tables: BTreeMap::new(),
         };
         roles.insert("no_access".to_string(), no_access_role);
 
         // Create tokens
-        let admin_token = Token {
-            roles: vec!["admin".to_string()],
-        };
+        let admin_token = vec!["admin".to_string()];
         tokens.insert("admin_token".to_string(), admin_token);
 
-        let readonly_token = Token {
-            roles: vec!["readonly".to_string()],
-        };
+        let readonly_token = vec!["readonly".to_string()];
         tokens.insert("readonly_token".to_string(), readonly_token);
 
-        let multi_role_token = Token {
-            roles: vec!["readonly".to_string(), "admin".to_string()],
-        };
+        let multi_role_token = vec!["readonly".to_string(), "admin".to_string()];
         tokens.insert("multi_role_token".to_string(), multi_role_token);
 
-        let no_access_token = Token {
-            roles: vec!["no_access".to_string()],
-        };
+        let no_access_token = vec!["no_access".to_string()];
         tokens.insert("no_access_token".to_string(), no_access_token);
 
         DbAccess { tokens, roles }
@@ -175,17 +149,6 @@ mod tests {
         assert!(db_access.is_authorized("admin_token", "orders", AccessOp::Read));
         assert!(db_access.is_authorized("admin_token", "orders", AccessOp::Update));
         assert!(!db_access.is_authorized("admin_token", "orders", AccessOp::Delete));
-    }
-
-    #[test]
-    fn test_is_authorized_fallback_permission() {
-        let db_access = create_test_db_access();
-
-        // Admin token should fall back to Read permission for unknown tables
-        assert!(!db_access.is_authorized("admin_token", "unknown_table", AccessOp::Create));
-        assert!(db_access.is_authorized("admin_token", "unknown_table", AccessOp::Read));
-        assert!(!db_access.is_authorized("admin_token", "unknown_table", AccessOp::Update));
-        assert!(!db_access.is_authorized("admin_token", "unknown_table", AccessOp::Delete));
     }
 
     #[test]
@@ -262,16 +225,11 @@ mod tests {
         exec_tables.insert("procedures".to_string(), "XR".to_string());
 
         let exec_role = Role {
-            access: TableAccess {
-                tables: exec_tables,
-                fallback: "".to_string(),
-            },
+            tables: exec_tables,
         };
         roles.insert("exec_role".to_string(), exec_role);
 
-        let exec_token = Token {
-            roles: vec!["exec_role".to_string()],
-        };
+        let exec_token = vec!["exec_role".to_string()];
         tokens.insert("exec_token".to_string(), exec_token);
 
         let db_access = DbAccess { tokens, roles };

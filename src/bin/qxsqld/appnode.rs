@@ -43,13 +43,13 @@ const METH_QUIT: &str = "quit";
 
 pub const APP_METHODS: &[MetaMethod] = &[
     MetaMethod::new_static(
-        METH_DB_ACCESS, Flags::None, AccessLevel::Read, "", "!DbAccess", &[], "",
+        METH_DB_ACCESS, Flags::None, AccessLevel::Config, "", "!DbAccess", &[], "",
     ),
     MetaMethod::new_static(
         METH_SET_DB_ACCESS, Flags::None, AccessLevel::Config, "!DbAccess", "", &[], "",
     ),
     MetaMethod::new_static(
-        METH_QUIT, Flags::None, AccessLevel::Write, "", "", &[], "",
+        METH_QUIT, Flags::None, AccessLevel::Config, "", "", &[], "",
     ),
 ];
 
