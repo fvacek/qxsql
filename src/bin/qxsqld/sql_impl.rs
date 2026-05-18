@@ -3,6 +3,7 @@ use std::backtrace::Backtrace;
 use async_trait::async_trait;
 use log::{error};
 
+use qxsql::RecChng;
 use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
 use anyhow::{anyhow};
@@ -222,7 +223,11 @@ impl qxsql::QxSqlApi for QxSql {
     }
 }
 
-impl qxsql::QxSqlApiRecChng for QxSql { }
+impl qxsql::QxSqlApiRecChng for QxSql {
+    fn filter_recchng(&self, recchng:RecChng) -> Option<RecChng>  {
+        Some(recchng)
+    }
+}
 
 #[cfg(test)]
 mod tests {
