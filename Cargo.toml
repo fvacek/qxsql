@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "qxsql-derive"]
+resolver = "2"
+
 [package]
 name = "qxsql"
 version = "0.1.1"
@@ -17,6 +21,7 @@ required-features = ["qxsqld"]
 # Core library dependencies
 # -----------------------------
 [dependencies]
+qxsql-derive = { path = "qxsql-derive" }
 serde = { version = "1.0", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1.89"

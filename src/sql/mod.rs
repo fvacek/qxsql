@@ -245,6 +245,95 @@ impl TryFrom<&RpcValue> for DbValue {
 }
 
 pub type Record = HashMap<String, DbValue>;
+
+/// Conversion from a [`DbValue`] into a concrete Rust type, used by the
+/// `TryFromRecord` derive macro.  Implement this for your own types if you
+/// store them in the database as one of the primitive `DbValue` variants.
+pub trait FromDbValue: Sized {
+    fn from_db_value(v: DbValue) -> Result<Self, String>;
+}
+
+impl FromDbValue for String {
+    fn from_db_value(v: DbValue) -> Result<Self, String> {
+        match v {
+            DbValue::String(s) => Ok(s),
+            other => Err(format!("expected String, got {other:?}")),
+        }
+    }
+}
+
+impl FromDbValue for i64 {
+    fn from_db_value(v: DbValue) -> Result<Self, String> {
+        match v {
+            DbValue::Int(n) => Ok(n),
+            other => Err(format!("expected Int, got {other:?}")),
+        }
+    }
+}
+
+impl FromDbValue for i32 {
+    fn from_db_value(v: DbValue) -> Result<Self, String> {
+        match v {
+            DbValue::Int(n) => Ok(n as i32),
+            other => Err(format!("expected Int, got {other:?}")),
+        }
+    }
+}
+
+impl FromDbValue for f64 {
+    fn from_db_value(v: DbValue) -> Result<Self, String> {
+        match v {
+            DbValue::Double(f) => Ok(f),
+            DbValue::Int(n) => Ok(n as f64),
+            other => Err(format!("expected Double, got {other:?}")),
+        }
+    }
+}
+
+impl FromDbValue for bool {
+    fn from_db_value(v: DbValue) -> Result<Self, String> {
+        match v {
+            DbValue::Bool(b) => Ok(b),
+            DbValue::Int(n) => Ok(n != 0),
+            other => Err(format!("expected Bool, got {other:?}")),
+        }
+    }
+}
+
+impl FromDbValue for Vec<u8> {
+    fn from_db_value(v: DbValue) -> Result<Self, String> {
+        match v {
+            DbValue::Blob(b) => Ok(b),
+            other => Err(format!("expected Blob, got {other:?}")),
+        }
+    }
+}
+
+impl FromDbValue for DateTime {
+    fn from_db_value(v: DbValue) -> Result<Self, String> {
+        match v {
+            DbValue::DateTime(dt) => Ok(dt),
+            DbValue::String(s) => s.parse().map_err(|e| format!("invalid datetime: {e}")),
+            other => Err(format!("expected DateTime, got {other:?}")),
+        }
+    }
+}
+
+impl FromDbValue for DbValue {
+    fn from_db_value(v: DbValue) -> Result<Self, String> {
+        Ok(v)
+    }
+}
+
+impl<T: FromDbValue> FromDbValue for Option<T> {
+    fn from_db_value(v: DbValue) -> Result<Self, String> {
+        match v {
+            DbValue::Null => Ok(None),
+            other => T::from_db_value(other).map(Some),
+        }
+    }
+}
+
 pub fn record_from_slice(arr: &[(&str, DbValue)]) -> Record {
     arr.iter()
         .map(|(key, value)| (key.to_string(), value.clone()))

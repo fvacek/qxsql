@@ -9,6 +9,8 @@ pub mod sql_utils;
 #[cfg(feature = "recchng")]
 pub use sql::recchng::QxSqlApiRecChng;
 
+pub use qxsql_derive::{ToRecord, TryFromRecord};
+pub use sql::FromDbValue;
 pub use logger::setup_flexi_logger;
 pub use sql::QxSqlApi;
 pub use sql::{

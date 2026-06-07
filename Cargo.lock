@@ -1698,6 +1698,7 @@ dependencies = [
  "futures",
  "futures-util",
  "log",
+ "qxsql-derive",
  "regex",
  "serde",
  "serde_json",
@@ -1709,6 +1710,15 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
+]
+
+[[package]]
+name = "qxsql-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
