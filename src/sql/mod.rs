@@ -516,6 +516,23 @@ impl QueryResult {
                 .collect()
         })
     }
+    pub fn value(&self, row: usize, col: usize) -> Option<&DbValue> {
+        self.rows.get(row).and_then(|row| row.get(col))
+    }
+    pub fn value_by_name(&self, row: usize, col: &str) -> Option<&DbValue> {
+        self.rows.get(row).and_then(|row| {
+            row.iter()
+                .zip(self.fields.iter())
+                .find(|(_, field)| field.name == col)
+                .map(|(value, _)| value)
+        })
+    }
+    pub fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+    pub fn column_count(&self) -> usize {
+        self.fields.len()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
