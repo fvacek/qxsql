@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use log::{error};
 
 use qxsql::RecChng;
+use shvclient::ClientCommandSender;
 use sqlx::{Pool, Postgres, Sqlite, sqlite::SqliteRow, postgres::PgRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgPool, SqlitePool};
 use anyhow::{anyhow};
@@ -199,7 +200,13 @@ fn db_value_from_postgres_row(row: &PgRow, index: usize) -> anyhow::Result<DbVal
     }
 }
 
-pub struct QxSql(pub SharedAppState);
+pub struct QxSql(pub SharedAppState, pub Option<ClientCommandSender>);
+
+impl QxSql {
+    pub fn new(app_state: SharedAppState, client_cmd_tx: ClientCommandSender) -> Self {
+        Self(app_state, Some(client_cmd_tx))
+    }
+}
 
 #[async_trait]
 impl qxsql::QxSqlApi for QxSql {
@@ -223,9 +230,14 @@ impl qxsql::QxSqlApi for QxSql {
     }
 }
 
+#[async_trait]
 impl qxsql::QxSqlApiRecChng for QxSql {
     fn filter_recchng(&self, recchng:RecChng) -> Option<RecChng>  {
         Some(recchng)
+    }
+
+    async fn client_command_sender(&self) -> Option<ClientCommandSender>  {
+        self.1.clone()
     }
 }
 
@@ -260,7 +272,7 @@ mod tests {
             .await?;
 
         let app_state = SharedAppState::new(RwLock::new(crate::appstate::AppState{db: DbPool::Sqlite(pool), db_access: None, shutdown_tx: None}));
-        Ok(QxSql(app_state))
+        Ok(QxSql(app_state, None))
     }
 
     #[tokio::test]

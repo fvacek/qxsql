@@ -74,7 +74,7 @@ shvclient::impl_static_node! {
             let mut resp = request.prepare_response().unwrap_or_default();
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
-                let qxsql = QxSql(app_state);
+                let qxsql = QxSql::new(app_state, client_cmd_tx.clone());
                 let result = qxsql.query(query.query(), query.params()).await;
                 match result {
                     Ok(result) => resp.set_result(to_rpcvalue(&result).expect("serde should work")),
@@ -93,7 +93,7 @@ shvclient::impl_static_node! {
             }
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
-                let qxsql = QxSql(app_state);
+                let qxsql = QxSql::new(app_state, client_cmd_tx.clone());
                 let result = qxsql.exec(query.query(), query.params()).await;
                 match result {
                     Ok(result) => resp.set_result(to_rpcvalue(&result).expect("serde should work")),
@@ -131,7 +131,7 @@ shvclient::impl_static_node! {
             let mut resp = request.prepare_response().unwrap_or_default();
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
-                let qxsql = QxSql(app_state);
+                let qxsql = QxSql::new(app_state, client_cmd_tx.clone());
                 let fields = string_list_to_ref_vec(&param.fields);
                 let result = qxsql.list_records(&param.table, fields, param.ids_above, param.limit).await;
                 match result {
@@ -154,8 +154,8 @@ shvclient::impl_static_node! {
             let mut resp = request.prepare_response().unwrap_or_default();
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
-                let qxsql = QxSql(app_state);
-                let result = qxsql.create_record_with_recchng(&param.table, &param.record, client_cmd_tx.clone(), param.issuer).await;
+                let qxsql = QxSql::new(app_state, client_cmd_tx.clone());
+                let result = qxsql.create_record_with_recchng(&param.table, &param.record, param.issuer).await;
                 match result {
                     Ok(result) => {
                         resp.set_result(to_rpcvalue(&result).expect("serde should work"));
@@ -177,7 +177,7 @@ shvclient::impl_static_node! {
             let mut resp = request.prepare_response().unwrap_or_default();
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
-                let qxsql = QxSql(app_state);
+                let qxsql = QxSql::new(app_state, client_cmd_tx.clone());
                 let fields = string_list_to_ref_vec(&param.fields);
                 let result = qxsql.read_record(&param.table, param.id, fields).await;
                 match result {
@@ -200,8 +200,8 @@ shvclient::impl_static_node! {
             let mut resp = request.prepare_response().unwrap_or_default();
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
-                let qxsql = QxSql(app_state);
-                let result = qxsql.update_record_with_recchng(&param.table, param.id, &param.record, client_cmd_tx.clone(), param.issuer).await;
+                let qxsql = QxSql::new(app_state, client_cmd_tx);
+                let result = qxsql.update_record_with_recchng(&param.table, param.id, &param.record, param.issuer).await;
                 match result {
                     Ok(result) => {
                         resp.set_result(to_rpcvalue(&result).expect("serde should work"));
@@ -220,8 +220,8 @@ shvclient::impl_static_node! {
             let mut resp = request.prepare_response().unwrap_or_default();
             let app_state = self.app_state.clone();
             tokio::task::spawn(async move {
-                let qxsql = QxSql(app_state);
-                let result = qxsql.delete_record_with_recchng(&param.table, param.id, client_cmd_tx.clone(), param.issuer).await;
+                let qxsql = QxSql::new(app_state, client_cmd_tx);
+                let result = qxsql.delete_record_with_recchng(&param.table, param.id, param.issuer).await;
                 match result {
                     Ok(result) => {
                         resp.set_result(to_rpcvalue(&result).expect("serde should work"));
