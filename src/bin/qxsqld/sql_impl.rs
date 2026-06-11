@@ -230,12 +230,13 @@ impl qxsql::QxSqlApi for QxSql {
     }
 }
 
+#[async_trait]
 impl qxsql::QxSqlApiRecChng for QxSql {
     fn filter_recchng(&self, recchng:RecChng) -> Option<RecChng>  {
         Some(recchng)
     }
 
-    fn client_command_sender(&self) -> Option<ClientCommandSender>  {
+    async fn client_command_sender(&self) -> Option<ClientCommandSender>  {
         self.1.clone()
     }
 }
