@@ -107,9 +107,12 @@ async fn list_one_or_more_records<T: QxSqlApi>(
 ) -> anyhow::Result<Vec<Record>> {
     let fields_str = fields.unwrap_or_else(|| vec!["*"]).join(", ");
     let mut qs = format!("SELECT {} FROM {}", fields_str, table);
-    if let Some(id) = id {
+    if let Some(id) = id && let Some(limit) = limit && limit == 1 {
+        qs.push_str(&format!(" WHERE id = {}", id));
+    } else if let Some(id) = id {
         qs.push_str(&format!(" WHERE id >= {}", id));
     }
+    qs.push_str(&format!(" ORDER BY id"));
     if let Some(limit) = limit {
         qs.push_str(&format!(" LIMIT {}", limit));
     }
