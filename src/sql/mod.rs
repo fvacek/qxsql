@@ -26,7 +26,7 @@ pub const DELETE_PARAMS: &str = "{s:table,i:id}";
 pub const DELETE_RESULT: &str = "b";
 
 #[async_trait]
-pub trait QxSqlApi: Send + Sync + Sized {
+pub trait QxSqlApi: Send + Sync {
     async fn query(&self, query: &str, params: Option<&Record>) -> anyhow::Result<QueryResult>;
     async fn exec(&self, query: &str, params: Option<&Record>) -> anyhow::Result<ExecResult>;
 
@@ -98,7 +98,7 @@ pub trait QxSqlApi: Send + Sync + Sized {
     }
 }
 
-async fn list_one_or_more_records<T: QxSqlApi>(
+async fn list_one_or_more_records<T: QxSqlApi + ?Sized>(
     sql: &T,
     table: &str,
     fields: Option<Vec<&str>>,

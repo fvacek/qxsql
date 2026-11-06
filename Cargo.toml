@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "qxsql"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 default-run = "qxsqld"
 
@@ -28,8 +28,8 @@ async-trait = "0.1.89"
 anyhow = "1.0"
 regex = "1.9"
 log = { version = "0.4" }
-shvproto = { version = "6.0.1", features = ["serde"] }
-shvrpc = { version = "18.0" }
+shvproto = { version = "8.0", features = ["serde"] }
+shvrpc = { version = "23.0" }
 
 # -----------------------------
 # Optional dependencies (used only by the qxsqld binary)
