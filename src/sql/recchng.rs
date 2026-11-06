@@ -8,13 +8,17 @@ use crate::{RecChng, RecOp, Record};
 pub trait QxSqlApiRecChng: super::QxSqlApi {
     fn filter_recchng(&self, recchng: RecChng) -> Option<RecChng>;
     async fn client_command_sender(&self) -> Option<ClientCommandSender>;
+    /// SHV path (relative to the client mount point) the `recchng` signal is emitted on.
+    fn recchng_shv_path(&self) -> String {
+        "sql".to_string()
+    }
 
     async fn create_record_with_recchng(&self, table: &str, record: &Record, issuer: Option<String>) -> anyhow::Result<i64> {
         let insert_id = self.create_record(table, record).await?;
         let recchng = RecChng {table: table.to_string(), id:insert_id, record:Some(record.clone()), op: RecOp::Insert, issuer };
         if let Some(recchng) = self.filter_recchng(recchng) && let Some(client_cmd_tx) = self.client_command_sender().await {
             let rec = to_rpcvalue(&recchng)?;
-            client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal("sql", "recchng").with_param(rec))?;
+            client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal(&self.recchng_shv_path(), "recchng").with_param(rec))?;
         }
         Ok(insert_id)
     }
@@ -24,7 +28,7 @@ pub trait QxSqlApiRecChng: super::QxSqlApi {
             let recchng = RecChng {table: table.to_string(), id, record:Some(record.clone()), op: RecOp::Update, issuer };
             if let Some(recchng) = self.filter_recchng(recchng) && let Some(client_cmd_tx) = self.client_command_sender().await {
                 let rec = to_rpcvalue(&recchng)?;
-                client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal("sql", "recchng").with_param(rec))?;
+                client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal(&self.recchng_shv_path(), "recchng").with_param(rec))?;
             }
         }
         Ok(updated)
@@ -35,7 +39,7 @@ pub trait QxSqlApiRecChng: super::QxSqlApi {
             let recchng = RecChng {table: table.to_string(), id, record:None, op: RecOp::Delete, issuer };
             if let Some(recchng) = self.filter_recchng(recchng) && let Some(client_cmd_tx) = self.client_command_sender().await {
                 let rec = to_rpcvalue(&recchng)?;
-                client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal("sql", "recchng").with_param(rec))?;
+                client_cmd_tx.send_message(shvrpc::RpcMessage::new_signal(&self.recchng_shv_path(), "recchng").with_param(rec))?;
             }
         }
         Ok(deleted)
